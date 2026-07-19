@@ -116,9 +116,9 @@ check('api: anthropic base → /v1/messages',
 check('api: anthropic base with /v1 → no double v1',
   apiEq(ai.resolveApiEndpoints('https://api.anthropic.com/v1'),
     { format: 'anthropic', chatUrl: 'https://api.anthropic.com/v1/messages', modelsUrl: 'https://api.anthropic.com/v1/models' }));
-check('api: deepseek anthropic proxy',
+check('api: deepseek anthropic proxy (models on openai root, bearer auth)',
   apiEq(ai.resolveApiEndpoints('https://api.deepseek.com/anthropic'),
-    { format: 'anthropic', chatUrl: 'https://api.deepseek.com/anthropic/v1/messages', modelsUrl: 'https://api.deepseek.com/anthropic/v1/models' }));
+    { format: 'anthropic', chatUrl: 'https://api.deepseek.com/anthropic/v1/messages', modelsUrl: 'https://api.deepseek.com/v1/models', modelsAuth: 'bearer' }));
 check('api: /messages suffix → anthropic, sibling /models',
   apiEq(ai.resolveApiEndpoints('https://proxy.example.com/v1/messages'),
     { format: 'anthropic', chatUrl: 'https://proxy.example.com/v1/messages', modelsUrl: 'https://proxy.example.com/v1/models' }));

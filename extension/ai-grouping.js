@@ -168,7 +168,16 @@ function resolveApiEndpoints(endpoint) {
   }
   const base = /\/v1$/.test(url) ? url : `${url}/v1`;
   if (/anthropic/i.test(url)) {
-    return { format: 'anthropic', chatUrl: `${base}/messages`, modelsUrl: `${base}/models` };
+    const ep = { format: 'anthropic', chatUrl: `${base}/messages`, modelsUrl: `${base}/models` };
+    // DeepSeek's /anthropic proxy speaks messages for chat, but its model
+    // listing lives on the OpenAI-compatible root with Bearer auth — with
+    // a valid key the proxied /models route 404s (auth middleware masks it
+    // as 401 for bad keys).
+    if (/^https:\/\/api\.deepseek\.com\/anthropic/.test(url)) {
+      ep.modelsUrl = 'https://api.deepseek.com/v1/models';
+      ep.modelsAuth = 'bearer';
+    }
+    return ep;
   }
   return { format: 'openai', chatUrl: `${base}/chat/completions`, modelsUrl: `${base}/models` };
 }
@@ -187,9 +196,9 @@ function resolveApiEndpoints(endpoint) {
 async function listModels(settings) {
   const api = resolveApiEndpoints(settings.endpoint);
   if (!api) throw new Error('Set an endpoint first');
-  const headers = api.format === 'anthropic'
-    ? { 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01' }
-    : { 'Authorization': `Bearer ${settings.apiKey}` };
+  const headers = api.modelsAuth === 'bearer' || api.format !== 'anthropic'
+    ? { 'Authorization': `Bearer ${settings.apiKey}` }
+    : { 'x-api-key': settings.apiKey, 'anthropic-version': '2023-06-01' };
   const res = await fetch(api.modelsUrl, { headers });
   if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 120)}`);
   const data = await res.json();
