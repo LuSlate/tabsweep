@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "TabSweep",
+  "version": "1.1.0",
+  "description": "New tab dashboard that groups open tabs by domain/task and helps you sweep stale ones.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "sidePanel",
+    "tabGroups",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "chrome_url_overrides": {
+    "newtab": "index.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "TabSweep",
+    "default_popup": "index.html?surface=popup",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "index.html?surface=panel"
+  },
+  "commands": {
+    "open_side_panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Open TabSweep in the side panel"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
