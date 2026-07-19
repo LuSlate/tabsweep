@@ -396,14 +396,10 @@ function playCloseSound() {
  */
 function shootConfetti(x, y) {
   const colors = [
-    '#c8713a', // amber
-    '#e8a070', // amber light
-    '#5a7a62', // sage
-    '#8aaa92', // sage light
-    '#5a6b7a', // slate
-    '#8a9baa', // slate light
-    '#d4b896', // warm paper
-    '#b35a5a', // rose
+    '#000000',
+    '#666666',
+    '#0000ee',
+    '#bbbbbb',
   ];
 
   const particleCount = 17;
@@ -1408,9 +1404,9 @@ document.addEventListener('click', async (e) => {
     playCloseSound();
     const banner = document.getElementById('dashboardDupeBanner');
     if (banner) {
-      banner.style.transition = 'opacity 0.4s';
+      banner.style.transition = 'opacity 0.15s linear';
       banner.style.opacity = '0';
-      setTimeout(() => { banner.style.display = 'none'; banner.style.opacity = '1'; }, 400);
+      setTimeout(() => { banner.style.display = 'none'; banner.style.opacity = '1'; }, 150);
     }
     showToast('Closed extra dashboard tabs');
     return;
@@ -1556,7 +1552,7 @@ document.addEventListener('click', async (e) => {
     if (chip) {
       const rect = chip.getBoundingClientRect();
       shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      chip.style.transition = 'opacity 0.2s, transform 0.2s';
+      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
       chip.style.opacity    = '0';
       chip.style.transform  = 'scale(0.8)';
       setTimeout(() => {
@@ -1605,7 +1601,7 @@ document.addEventListener('click', async (e) => {
     // Animate chip out
     const chip = actionEl.closest('.page-chip');
     if (chip) {
-      chip.style.transition = 'opacity 0.2s, transform 0.2s';
+      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
       chip.style.opacity    = '0';
       chip.style.transform  = 'scale(0.8)';
       setTimeout(() => chip.remove(), 200);
@@ -1745,20 +1741,20 @@ document.addEventListener('click', async (e) => {
     playCloseSound();
 
     // Hide the dedup button
-    actionEl.style.transition = 'opacity 0.2s';
+    actionEl.style.transition = 'opacity 0.2s linear';
     actionEl.style.opacity    = '0';
     setTimeout(() => actionEl.remove(), 200);
 
     // Remove dupe badges from the card
     if (card) {
       card.querySelectorAll('.chip-dupe-badge').forEach(b => {
-        b.style.transition = 'opacity 0.2s';
+        b.style.transition = 'opacity 0.2s linear';
         b.style.opacity    = '0';
         setTimeout(() => b.remove(), 200);
       });
       card.querySelectorAll('.open-tabs-badge').forEach(badge => {
         if (badge.textContent.includes('duplicate')) {
-          badge.style.transition = 'opacity 0.2s';
+          badge.style.transition = 'opacity 0.2s linear';
           badge.style.opacity    = '0';
           setTimeout(() => badge.remove(), 200);
         }
