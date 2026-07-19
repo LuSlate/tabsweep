@@ -1432,7 +1432,6 @@ document.addEventListener('click', async (e) => {
     actionEl.disabled = false;
     actionEl.textContent = t('testConnection');
     return;
-    return;
   }
 
   // ---- Save settings ----
