@@ -536,8 +536,8 @@ function checkAndShowEmptyState() {
 
   groupsEl.innerHTML = `
     <div class="allclear">
-      <strong>All clear</strong>
-      No open tabs
+      <strong>${t('allClear')}</strong>
+      ${t('noOpenTabs')}
     </div>`;
 }
 
@@ -555,18 +555,18 @@ function timeAgo(dateStr) {
   const diffHours = Math.floor((now - then) / 3600000);
   const diffDays  = Math.floor((now - then) / 86400000);
 
-  if (diffMins < 1)   return 'just now';
-  if (diffMins < 60)  return diffMins + ' min ago';
-  if (diffHours < 24) return diffHours + ' hr' + (diffHours !== 1 ? 's' : '') + ' ago';
-  if (diffDays === 1) return 'yesterday';
-  return diffDays + ' days ago';
+  if (diffMins < 1)   return t('justNow');
+  if (diffMins < 60)  return t('minAgo', { n: diffMins });
+  if (diffHours < 24) return t('hrsAgo', { n: diffHours, s: diffHours !== 1 ? 's' : '' });
+  if (diffDays === 1) return t('yesterday');
+  return t('daysAgo', { n: diffDays });
 }
 
 /**
  * getDateDisplay() — "Friday, April 4, 2026"
  */
 function getDateDisplay() {
-  return new Date().toLocaleDateString('en-US', {
+  return new Date().toLocaleDateString(currentLang() === 'zh' ? 'zh-CN' : 'en-US', {
     weekday: 'long',
     year:    'numeric',
     month:   'long',
@@ -724,7 +724,7 @@ async function sweepStaleTabs() {
   await fetchOpenTabs();
 
   playCloseSound();
-  showToast(`Swept ${staleTabs.length} stale tab${staleTabs.length !== 1 ? 's' : ''} — saved to archive`);
+  showToast(t('toastSwept', { n: staleTabs.length, s: staleTabs.length !== 1 ? 's' : '' }));
   renderStaticDashboard();
 }
 
@@ -762,7 +762,7 @@ async function stashGroup(group) {
   if (tabs.length === 0) return null;
 
   const name = group.domain === '__landing-pages__'
-    ? 'Homepages'
+    ? t('homepages')
     : (group.label || friendlyDomain(group.domain));
 
   const workspaces = await getWorkspaces();
@@ -818,7 +818,7 @@ async function restoreWorkspace(id) {
 
   await chrome.storage.local.set({ workspaces: workspaces.filter(w => w.id !== id) });
   await fetchOpenTabs();
-  showToast(`Restored ${created.length} tab${created.length !== 1 ? 's' : ''} — ${ws.name}`);
+  showToast(t('toastRestored', { n: created.length, s: created.length !== 1 ? 's' : '', name: ws.name }));
   renderStaticDashboard();
 }
 
@@ -831,7 +831,7 @@ async function deleteWorkspace(id) {
   const workspaces = await getWorkspaces();
   await chrome.storage.local.set({ workspaces: workspaces.filter(w => w.id !== id) });
   await renderWorkspaces();
-  showToast('Workspace deleted');
+  showToast(t('toastWsDeleted'));
 }
 
 /**
@@ -843,10 +843,10 @@ async function deleteWorkspace(id) {
 function renderWorkspaceCard(ws) {
   return `<div class="ws-row" data-workspace-id="${ws.id}">
     <span class="ws-name">${escapeHtml(ws.name)}</span>
-    <span class="ws-meta">${ws.tabs.length} tab${ws.tabs.length !== 1 ? 's' : ''} · saved ${timeAgo(ws.savedAt)}</span>
+    <span class="ws-meta">${t('wsMeta', { n: ws.tabs.length, s: ws.tabs.length !== 1 ? 's' : '', ago: timeAgo(ws.savedAt) })}</span>
     <span class="ws-actions">
-      <button class="cmd" data-action="restore-workspace" data-workspace-id="${ws.id}">Restore</button>
-      <button class="cmd danger" data-action="delete-workspace" data-workspace-id="${ws.id}">Delete</button>
+      <button class="cmd" data-action="restore-workspace" data-workspace-id="${ws.id}">${t('restore')}</button>
+      <button class="cmd danger" data-action="delete-workspace" data-workspace-id="${ws.id}">${t('deleteLabel')}</button>
     </span>
   </div>`;
 }
@@ -868,7 +868,7 @@ async function renderWorkspaces() {
     return;
   }
 
-  if (countEl) countEl.textContent = `${workspaces.length} stashed`;
+  if (countEl) countEl.textContent = t('stashedCount', { n: workspaces.length });
   missions.innerHTML = workspaces.map(renderWorkspaceCard).join('');
   section.style.display = 'block';
 }
@@ -889,18 +889,18 @@ function renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN, autoGroupOn }) {
   if (!bar) return;
   let html = '';
   if (staleN > 0) {
-    html += `<button class="cmd" data-action="sweep-stale-tabs">&gt; Sweep ${staleN} stale</button>`;
+    html += `<button class="cmd" data-action="sweep-stale-tabs">${t('cmdSweep', { n: staleN })}</button>`;
   }
   if (dashDupeN > 1) {
-    html += `<button class="cmd" data-action="close-dashboard-dupes">&gt; Close ${dashDupeN - 1} extra dashboard${dashDupeN - 1 !== 1 ? 's' : ''}</button>`;
+    html += `<button class="cmd" data-action="close-dashboard-dupes">${t('cmdCloseDash', { n: dashDupeN - 1, s: (dashDupeN - 1) !== 1 ? 's' : '' })}</button>`;
   }
   if (aiDupeN > 0) {
-    html += `<button class="cmd" data-action="close-ai-dupes">&gt; Close ${aiDupeN} AI dupe${aiDupeN !== 1 ? 's' : ''}</button>`;
+    html += `<button class="cmd" data-action="close-ai-dupes">${t('cmdCloseAiDupes', { n: aiDupeN, s: aiDupeN !== 1 ? 's' : '' })}</button>`;
   }
-  html += `<button class="cmd" data-action="smart-group">&gt; Smart group</button>
-    <button class="cmd" data-action="group-in-chrome">&gt; Group in Chrome</button>
-    <label class="cmd auto-toggle"><input type="checkbox" data-action="toggle-auto-group" ${autoGroupOn ? 'checked' : ''}>Auto</label>
-    <button class="cmd danger" data-action="close-all-open-tabs">&gt; Close all ${totalN}</button>`;
+  html += `<button class="cmd" data-action="smart-group">${t('cmdSmartGroup')}</button>
+    <button class="cmd" data-action="group-in-chrome">${t('cmdGroupChrome')}</button>
+    <label class="cmd auto-toggle"><input type="checkbox" data-action="toggle-auto-group" ${autoGroupOn ? 'checked' : ''}>${t('cmdAuto')}</label>
+    <button class="cmd danger" data-action="close-all-open-tabs">${t('cmdCloseAll', { n: totalN })}</button>`;
   bar.innerHTML = html;
 }
 
@@ -952,8 +952,8 @@ function renderGroupSection(group, startNum) {
   const visibleTabs = uniqueTabs.slice(0, 8);
   const extraCount  = uniqueTabs.length - visibleTabs.length;
 
-  const cardTitle = isLanding ? 'Homepages' : (group.label || friendlyDomain(group.domain));
-  const bandTitle = group.domain.startsWith('__task-') ? `Task · ${cardTitle}` : cardTitle;
+  const cardTitle = isLanding ? t('homepages') : (group.label || friendlyDomain(group.domain));
+  const bandTitle = group.domain.startsWith('__task-') ? t('taskDot', { label: cardTitle }) : cardTitle;
 
   let num = startNum;
   const rowHtml = (tab) => {
@@ -976,10 +976,10 @@ function renderGroupSection(group, startNum) {
       ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
       <span class="chip-text">${label}</span>${dupeTag}
       <div class="chip-actions">
-        <button class="chip-action" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
+        <button class="chip-action" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${t('saveTabTitle')}">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
         </button>
-        <button class="chip-action" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
+        <button class="chip-action" data-action="close-single-tab" data-tab-url="${safeUrl}" title="${t('closeTabTitle')}">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -991,15 +991,15 @@ function renderGroupSection(group, startNum) {
   const overflow = extraCount > 0
     ? `<div class="grows-hidden" style="display:none">${hiddenRows}</div>
        <div class="trow trow-overflow clickable" data-action="expand-chips">
-         <span class="chip-text">+${extraCount} more</span>
+         <span class="chip-text">${t('moreN', { n: extraCount })}</span>
        </div>`
     : '';
 
   const dupeUrlsEncoded = hasDupes ? dupeUrls.map(([url]) => encodeURIComponent(url)).join(',') : '';
   const bandActions = `
-    ${hasDupes ? `<button class="cmd" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}">Dedup ${totalExtras}</button>` : ''}
-    <button class="cmd" data-action="stash-group" data-domain-id="${stableId}" title="Save this group and close its tabs">Stash</button>
-    <button class="cmd" data-action="close-domain-tabs" data-domain-id="${stableId}">Close ${tabCount}</button>`;
+    ${hasDupes ? `<button class="cmd" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}">${t('dedupN', { n: totalExtras })}</button>` : ''}
+    <button class="cmd" data-action="stash-group" data-domain-id="${stableId}" title="${t('stashTitle')}">${t('stash')}</button>
+    <button class="cmd" data-action="close-domain-tabs" data-domain-id="${stableId}">${t('closeN', { n: tabCount })}</button>`;
 
   const html = `<section class="group" data-domain-id="${stableId}">
     <div class="band">
@@ -1050,11 +1050,11 @@ function renderAiSweepSection(items, realTabs, startNum) {
   if (rows.length === 0) return { html: '', emitted: 0 };
   const html = `<section class="group" id="aiSweepSection">
     <div class="band">
-      <span class="band-title">AI sweep · ${rows.length}</span>
+      <span class="band-title">${t('aiSweepBand', { n: rows.length })}</span>
       <span class="band-right">
         <span class="band-actions">
-          <button class="cmd" data-action="ai-sweep-confirm">Close selected</button>
-          <button class="cmd" data-action="ai-sweep-dismiss">Dismiss</button>
+          <button class="cmd" data-action="ai-sweep-confirm">${t('closeSelected')}</button>
+          <button class="cmd" data-action="ai-sweep-dismiss">${t('dismiss')}</button>
         </span>
         <span class="band-count">${rows.length}</span>
       </span>
@@ -1100,7 +1100,7 @@ async function renderDeferredColumn() {
 
     // Render active checklist items
     if (active.length > 0) {
-      countEl.textContent = `${active.length} item${active.length !== 1 ? 's' : ''}`;
+      countEl.textContent = t('itemsCount', { n: active.length, s: active.length !== 1 ? 's' : '' });
       list.innerHTML = active.map(item => renderDeferredItem(item)).join('');
       list.style.display = 'block';
       empty.style.display = 'none';
@@ -1149,7 +1149,7 @@ function renderDeferredItem(item) {
           <span>${ago}</span>
         </div>
       </div>
-      <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" title="Dismiss">
+      <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" title="${t('dismiss')}">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
       </button>
     </div>`;
@@ -1196,7 +1196,7 @@ async function renderStaticDashboard() {
   await fetchOpenTabs();
   const realTabs = getRealTabs();
   const totalEl = document.getElementById('totalCount');
-  if (totalEl) totalEl.textContent = `${realTabs.length} tabs`;
+  if (totalEl) totalEl.textContent = t('tabsCount', { n: realTabs.length, s: realTabs.length !== 1 ? 's' : '' });
 
   // Stale threshold follows the autoClose setting (single source of truth
   // shared by the banner, the chip dimming, and the background alarm)
@@ -1263,7 +1263,7 @@ async function renderStaticDashboard() {
     const root = tg.rootTabId != null ? tabById.get(tg.rootTabId) : null;
     const label = tg.label ||
       (root ? cleanTitle(smartTitle(stripTitleNoise(root.title || ''), root.url), '') : '') ||
-      `Task · ${tabs.length} tabs`;
+      t('taskTabs', { n: tabs.length, s: tabs.length !== 1 ? 's' : '' });
     groupMap[`__task-${i}__`] = { domain: `__task-${i}__`, label, tabs };
   });
 
@@ -1321,14 +1321,14 @@ async function renderStaticDashboard() {
   // --- Auto-sweep notice (written by the background alarm, Task 6) ---
   const { lastSweep, lastSweepSeen } = await chrome.storage.local.get(['lastSweep', 'lastSweepSeen']);
   if (lastSweep && lastSweep.at && lastSweep.at !== lastSweepSeen) {
-    showToast(`Auto-swept ${lastSweep.count} stale tab${lastSweep.count !== 1 ? 's' : ''} — saved to archive`);
+    showToast(t('toastAutoSwept', { n: lastSweep.count, s: lastSweep.count !== 1 ? 's' : '' }));
     await chrome.storage.local.set({ lastSweepSeen: lastSweep.at });
   }
 
   // --- AI tick notice (written by runAiTick; shown once) ---
   const { lastAiTick, lastAiTickSeen } = await chrome.storage.local.get(['lastAiTick', 'lastAiTickSeen']);
   if (lastAiTick && lastAiTick.at && lastAiTick.at !== lastAiTickSeen) {
-    showToast(`AI: ${lastAiTick.groups} groups · ${lastAiTick.dupes} dupes · ${lastAiTick.close} close suggestions`);
+    showToast(t('toastAiTick', { g: lastAiTick.groups, d: lastAiTick.dupes, c: lastAiTick.close }));
     await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
   }
 
@@ -1363,7 +1363,7 @@ document.addEventListener('click', async (e) => {
   if (action === 'close-dashboard-dupes') {
     await closeDashboardDupes();
     playCloseSound();
-    showToast('Closed extra dashboard tabs');
+    showToast(t('toastDashClosed'));
     renderStaticDashboard();
     return;
   }
@@ -1377,7 +1377,7 @@ document.addEventListener('click', async (e) => {
   // ---- Toggle background auto-grouping ----
   if (action === 'toggle-auto-group') {
     await chrome.storage.local.set({ autoGroup: actionEl.checked });
-    showToast(actionEl.checked ? 'Auto-grouping on' : 'Auto-grouping off');
+    showToast(actionEl.checked ? t('toastAutoGroupOn') : t('toastAutoGroupOff'));
     return;
   }
 
@@ -1391,15 +1391,22 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  // ---- Language toggle (topbar 中/EN button) ----
+  if (action === 'toggle-lang') {
+    await toggleLang();
+    await renderStaticDashboard();
+    return;
+  }
+
   // ---- Test AI endpoint connection + auto-detect models ----
   if (action === 'test-connection') {
     const settings = {
       endpoint: document.getElementById('setAiEndpoint').value.trim() || AI_GROUPING_DEFAULTS.endpoint,
       apiKey:   document.getElementById('setAiKey').value.trim(),
     };
-    if (!settings.apiKey) { showToast('Enter an API key first'); return; }
+    if (!settings.apiKey) { showToast(t('toastEnterKey')); return; }
     actionEl.disabled = true;
-    actionEl.textContent = '⏳ Testing…';
+    actionEl.textContent = t('testing');
     try {
       let models = null;
       try {
@@ -1414,16 +1421,17 @@ document.addEventListener('click', async (e) => {
       if (models) {
         document.getElementById('modelList').innerHTML =
           models.map(m => `<option value="${escapeHtml(m)}">`).join('');
-        showToast(`Connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`);
+        showToast(t('toastConnModels', { n: models.length, s: models.length !== 1 ? 's' : '' }));
       } else {
-        showToast('Connected — this endpoint has no model listing');
+        showToast(t('toastConnNoList'));
       }
     } catch (err) {
       console.error('[tabsweep] test connection failed:', err);
-      showToast(`Connection failed: ${err.message}`);
+      showToast(t('toastConnFailed', { msg: err.message }));
     }
     actionEl.disabled = false;
-    actionEl.textContent = 'Test connection & list models';
+    actionEl.textContent = t('testConnection');
+    return;
     return;
   }
 
@@ -1449,7 +1457,7 @@ document.addEventListener('click', async (e) => {
         sweepTime:      document.getElementById('setSweepTime').value, // '' = interval mode
       },
     });
-    showToast('Settings saved');
+    showToast(t('toastSettingsSaved'));
     const ac = await getAutoCloseSettings();
     currentStaleMs = ac.tabStaleDays * DAY_MS;
     renderStaticDashboard(); // refresh the command bar with new stale threshold
@@ -1460,21 +1468,21 @@ document.addEventListener('click', async (e) => {
   if (action === 'smart-group') {
     const settings = await getAiGroupingSettings();
     if (!settings.apiKey) {
-      showToast('Set an API key in ⚙ Settings first');
+      showToast(t('toastNeedKey'));
       return;
     }
     actionEl.disabled = true;
-    actionEl.textContent = '⏳ Grouping…';
+    actionEl.textContent = t('grouping');
     try {
       const result = await runAiTick(settings, { force: true });
       const dupeN = result.dupes.reduce((n, c) => n + c.length - 1, 0);
-      showToast(`AI: ${result.groups.length} groups · ${dupeN} dupes · ${result.close.length} close suggestions`);
+      showToast(t('toastAiTick', { g: result.groups.length, d: dupeN, c: result.close.length }));
       // We just toasted the outcome — don't let the tick notice repeat it
       const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
       if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
     } catch (err) {
       console.error('[tabsweep] smart group failed:', err);
-      showToast(`Smart group failed: ${err.message}`);
+      showToast(t('toastSmartFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
     return;
@@ -1484,20 +1492,20 @@ document.addEventListener('click', async (e) => {
   if (action === 'regroup-all') {
     const settings = await getAiGroupingSettings();
     if (!settings.apiKey) {
-      showToast('Set an API key in ⚙ Settings first');
+      showToast(t('toastNeedKey'));
       return;
     }
     actionEl.disabled = true;
-    actionEl.textContent = '⏳ Re-grouping…';
+    actionEl.textContent = t('regrouping');
     try {
       await chrome.storage.local.remove('aiGroupCache');
       const result = await runAiTick(settings, { force: true });
-      showToast(`Re-grouped into ${result.groups.length} tasks`);
+      showToast(t('toastRegrouped', { n: result.groups.length }));
       const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
       if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
     } catch (err) {
       console.error('[tabsweep] re-group failed:', err);
-      showToast(`Re-group failed: ${err.message}`);
+      showToast(t('toastRegroupFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
     return;
@@ -1567,7 +1575,7 @@ document.addEventListener('click', async (e) => {
     const statTabs = document.getElementById('statTabs');
     if (statTabs) statTabs.textContent = openTabs.length;
 
-    showToast('Tab closed');
+    showToast(t('toastTabClosed'));
     return;
   }
 
@@ -1583,7 +1591,7 @@ document.addEventListener('click', async (e) => {
       await saveTabForLater({ url: tabUrl, title: tabTitle });
     } catch (err) {
       console.error('[tabsweep] Failed to save tab:', err);
-      showToast('Failed to save tab');
+      showToast(t('toastSaveFailed'));
       return;
     }
 
@@ -1602,7 +1610,7 @@ document.addEventListener('click', async (e) => {
       setTimeout(() => chip.remove(), 200);
     }
 
-    showToast('Saved for later');
+    showToast(t('toastDeferred'));
     await renderDeferredColumn();
     return;
   }
@@ -1675,8 +1683,8 @@ document.addEventListener('click', async (e) => {
     const idx = domainGroups.indexOf(group);
     if (idx !== -1) domainGroups.splice(idx, 1);
 
-    const groupLabel = group.domain === '__landing-pages__' ? 'Homepages' : (group.label || friendlyDomain(group.domain));
-    showToast(`Closed ${urls.length} tab${urls.length !== 1 ? 's' : ''} from ${groupLabel}`);
+    const groupLabel = group.domain === '__landing-pages__' ? t('homepages') : (group.label || friendlyDomain(group.domain));
+    showToast(t('toastClosedFrom', { n: urls.length, s: urls.length !== 1 ? 's' : '', label: groupLabel }));
 
     const statTabs = document.getElementById('statTabs');
     if (statTabs) statTabs.textContent = openTabs.length;
@@ -1703,7 +1711,7 @@ document.addEventListener('click', async (e) => {
     const idx = domainGroups.indexOf(group);
     if (idx !== -1) domainGroups.splice(idx, 1);
 
-    showToast(`Stashed ${closedCount} tab${closedCount !== 1 ? 's' : ''} — ${name}`);
+    showToast(t('toastStashed', { n: closedCount, s: closedCount !== 1 ? 's' : '', name }));
 
     const statTabs = document.getElementById('statTabs');
     if (statTabs) statTabs.textContent = openTabs.length;
@@ -1751,7 +1759,7 @@ document.addEventListener('click', async (e) => {
       if (bandCount) bandCount.textContent = card.querySelectorAll('.trow[data-action="focus-tab"]').length;
     }
 
-    showToast('Closed duplicates, kept one copy each');
+    showToast(t('toastDupesClosed'));
     return;
   }
 
@@ -1766,7 +1774,7 @@ document.addEventListener('click', async (e) => {
     await archiveAndClose(targets);
     await fetchOpenTabs();
     playCloseSound();
-    showToast(`Closed ${targets.length} AI dupe${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    showToast(t('toastAiDupesClosed', { n: targets.length, s: targets.length !== 1 ? 's' : '' }));
     renderStaticDashboard();
     return;
   }
@@ -1785,7 +1793,7 @@ document.addEventListener('click', async (e) => {
     if (!section) return;
     const urls = [...section.querySelectorAll('.sweep-checkbox:checked')]
       .map(b => b.dataset.tabUrl);
-    if (urls.length === 0) { showToast('Nothing selected'); return; }
+    if (urls.length === 0) { showToast(t('toastNothingSelected')); return; }
     const urlSet = new Set(urls);
     const targets = getRealTabs().filter(t => urlSet.has(t.url));
     await archiveAndClose(targets);
@@ -1800,7 +1808,7 @@ document.addEventListener('click', async (e) => {
     }
     await fetchOpenTabs();
     playCloseSound();
-    showToast(`Closed ${targets.length} tab${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    showToast(t('toastClosedArchived', { n: targets.length, s: targets.length !== 1 ? 's' : '' }));
     renderStaticDashboard();
     return;
   }
@@ -1828,7 +1836,7 @@ document.addEventListener('click', async (e) => {
       animateCardOut(c);
     });
 
-    showToast('All tabs closed. Fresh start.');
+    showToast(t('toastAllClosed'));
     return;
   }
 });
@@ -1869,7 +1877,7 @@ document.addEventListener('input', async (e) => {
     );
 
     archiveList.innerHTML = results.map(item => renderArchiveItem(item)).join('')
-      || '<div style="font-size:12px;color:var(--muted);padding:8px 0">No results</div>';
+      || `<div style="font-size:12px;color:var(--muted);padding:8px 0">${t('noResults')}</div>`;
   } catch (err) {
     console.warn('[tabsweep] Archive search failed:', err);
   }
@@ -1879,4 +1887,7 @@ document.addEventListener('input', async (e) => {
 /* ----------------------------------------------------------------
    INITIALIZE
    ---------------------------------------------------------------- */
-renderDashboard();
+(async () => {
+  await initI18n();
+  renderDashboard();
+})();
