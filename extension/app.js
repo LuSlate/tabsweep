@@ -243,8 +243,8 @@ async function groupTabsInChrome() {
   }
 
   showToast(groupsMade > 0
-    ? `Grouped ${tabsGrouped} tabs into ${groupsMade} group${groupsMade !== 1 ? 's' : ''}`
-    : 'Nothing to group');
+    ? t('toastGrouped', { n: tabsGrouped, m: groupsMade, s: groupsMade !== 1 ? 's' : '' })
+    : t('toastNothingGroup'));
 }
 
 
@@ -652,7 +652,7 @@ function smartTitle(title, url) {
   }
 
   if ((hostname === 'www.youtube.com' || hostname === 'youtube.com') && pathname === '/watch') {
-    if (titleIsUrl) return 'YouTube Video';
+    if (titleIsUrl) return t('youtubeVideo');
   }
 
   if ((hostname === 'www.reddit.com' || hostname === 'reddit.com' || hostname === 'old.reddit.com') && pathname.includes('/comments/')) {
