@@ -1336,10 +1336,23 @@ document.addEventListener('click', async (e) => {
     actionEl.disabled = true;
     actionEl.textContent = '⏳ Testing…';
     try {
-      const models = await listModels(settings);
-      document.getElementById('modelList').innerHTML =
-        models.map(m => `<option value="${escapeHtml(m)}">`).join('');
-      showToast(`Connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`);
+      let models = null;
+      try {
+        models = await listModels(settings);
+      } catch {
+        // Some endpoints (e.g. deepseek/anthropic proxy) have no /models
+        // listing — fall back to a 1-token chat probe. Its error, if any,
+        // is the meaningful one (bad key / bad URL / provider message).
+        const model = document.getElementById('setAiModel').value.trim() || AI_GROUPING_DEFAULTS.model;
+        await probeChatEndpoint({ ...settings, model });
+      }
+      if (models) {
+        document.getElementById('modelList').innerHTML =
+          models.map(m => `<option value="${escapeHtml(m)}">`).join('');
+        showToast(`Connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`);
+      } else {
+        showToast('Connected — this endpoint has no model listing');
+      }
     } catch (err) {
       console.error('[tabsweep] test connection failed:', err);
       showToast(`Connection failed: ${err.message}`);
