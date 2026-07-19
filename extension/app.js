@@ -1015,6 +1015,55 @@ function renderGroupSection(group, startNum) {
   return { html, emitted: num - startNum };
 }
 
+/**
+ * renderAiSweepSection(items, realTabs, startNum)
+ *   → { html: string, emitted: number }
+ *
+ * The AI-sweep review band: one checkbox row per close suggestion that
+ * still maps to a live tab (first free tab per url wins). Rows do NOT
+ * navigate — clicking toggles the checkbox (checked = will close).
+ * Numbers chain into the global row numbering via startNum, same
+ * contract as renderGroupSection. All model text goes through escapeHtml.
+ */
+function renderAiSweepSection(items, realTabs, startNum) {
+  const idsByUrl = new Map();
+  for (const t of realTabs) {
+    if (!idsByUrl.has(t.url)) idsByUrl.set(t.url, []);
+    idsByUrl.get(t.url).push(t.id);
+  }
+  const used = new Set();
+  const rows = [];
+  let num = startNum;
+  for (const item of items || []) {
+    const free = (idsByUrl.get(item.url) || []).find(id => !used.has(id));
+    if (free == null) continue;
+    used.add(free);
+    num++;
+    const safeUrl = String(item.url).replace(/"/g, '&quot;');
+    const reason = item.reason ? ` <span class="sweep-reason">${escapeHtml(item.reason)}</span>` : '';
+    rows.push(`<div class="trow sweep-row" data-action="ai-sweep-toggle">
+      <span class="tnum">${String(num).padStart(3, '0')}</span>
+      <input type="checkbox" class="sweep-checkbox" data-tab-url="${safeUrl}" checked>
+      <span class="chip-text">${escapeHtml(item.title || item.url)}</span>${reason}
+    </div>`);
+  }
+  if (rows.length === 0) return { html: '', emitted: 0 };
+  const html = `<section class="group" id="aiSweepSection">
+    <div class="band">
+      <span class="band-title">AI sweep · ${rows.length}</span>
+      <span class="band-right">
+        <span class="band-actions">
+          <button class="cmd" data-action="ai-sweep-confirm">Close selected</button>
+          <button class="cmd" data-action="ai-sweep-dismiss">Dismiss</button>
+        </span>
+        <span class="band-count">${rows.length}</span>
+      </span>
+    </div>
+    <div class="grows">${rows.join('')}</div>
+  </section>`;
+  return { html, emitted: rows.length };
+}
+
 
 /* ----------------------------------------------------------------
    SAVED FOR LATER — Render Checklist Column
@@ -1242,11 +1291,13 @@ async function renderStaticDashboard() {
     return b.tabs.length - a.tabs.length;
   });
 
-  // --- Render domain groups ---
+  // --- Render AI sweep band + domain groups (sweep band takes the first numbers) ---
+  const { aiSweepSuggestions } = await chrome.storage.local.get('aiSweepSuggestions');
   const groupsEl = document.getElementById('openTabsGroups');
   if (groupsEl && domainGroups.length > 0) {
-    let startNum = 0;
-    groupsEl.innerHTML = domainGroups.map(g => {
+    const sweep = renderAiSweepSection(aiSweepSuggestions && aiSweepSuggestions.items, realTabs, 0);
+    let startNum = sweep.emitted;
+    groupsEl.innerHTML = sweep.html + domainGroups.map(g => {
       const r = renderGroupSection(g, startNum);
       startNum += r.emitted;
       return r.html;
@@ -1718,6 +1769,47 @@ document.addEventListener('click', async (e) => {
     await fetchOpenTabs();
     playCloseSound();
     showToast(`Closed ${targets.length} AI dupe${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    renderStaticDashboard();
+    return;
+  }
+
+  // ---- AI sweep row: toggle its checkbox (row click never navigates) ----
+  if (action === 'ai-sweep-toggle') {
+    if (e.target.classList && e.target.classList.contains('sweep-checkbox')) return; // native toggle
+    const box = actionEl.querySelector('.sweep-checkbox');
+    if (box) box.checked = !box.checked;
+    return;
+  }
+
+  // ---- AI sweep: archive-and-close the checked suggestions ----
+  if (action === 'ai-sweep-confirm') {
+    const section = actionEl.closest('#aiSweepSection');
+    if (!section) return;
+    const urls = [...section.querySelectorAll('.sweep-checkbox:checked')]
+      .map(b => b.dataset.tabUrl);
+    if (urls.length === 0) { showToast('Nothing selected'); return; }
+    const urlSet = new Set(urls);
+    const targets = getRealTabs().filter(t => urlSet.has(t.url));
+    await archiveAndClose(targets);
+    // Prune closed urls; drop the key when nothing remains
+    const { aiSweepSuggestions } = await chrome.storage.local.get('aiSweepSuggestions');
+    const remaining = ((aiSweepSuggestions && aiSweepSuggestions.items) || [])
+      .filter(it => !urlSet.has(it.url));
+    if (remaining.length > 0) {
+      await chrome.storage.local.set({ aiSweepSuggestions: { items: remaining, ts: Date.now() } });
+    } else {
+      await chrome.storage.local.remove('aiSweepSuggestions');
+    }
+    await fetchOpenTabs();
+    playCloseSound();
+    showToast(`Closed ${targets.length} tab${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    renderStaticDashboard();
+    return;
+  }
+
+  // ---- AI sweep: discard all suggestions ----
+  if (action === 'ai-sweep-dismiss') {
+    await chrome.storage.local.remove('aiSweepSuggestions');
     renderStaticDashboard();
     return;
   }

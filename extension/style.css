@@ -348,7 +348,7 @@ body {
 
 .deferred-item:last-child { border-bottom: none; }
 
-.deferred-checkbox {
+.deferred-checkbox, .sweep-checkbox {
   appearance: none;
   -webkit-appearance: none;
   width: 16px;
@@ -360,11 +360,22 @@ body {
   position: relative;
 }
 
-.deferred-checkbox:checked::after {
+.deferred-checkbox:checked::after, .sweep-checkbox:checked::after {
   content: '';
   position: absolute;
   inset: 2px;
   background: var(--mark);
+}
+
+.sweep-row { cursor: pointer; }
+
+.sweep-reason {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .deferred-info { flex: 1; min-width: 0; }
