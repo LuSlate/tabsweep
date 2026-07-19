@@ -1029,22 +1029,22 @@ function renderAiSweepSection(items, realTabs, startNum) {
   const idsByUrl = new Map();
   for (const t of realTabs) {
     if (!idsByUrl.has(t.url)) idsByUrl.set(t.url, []);
-    idsByUrl.get(t.url).push(t.id);
+    idsByUrl.get(t.url).push(t);
   }
   const used = new Set();
   const rows = [];
   let num = startNum;
   for (const item of items || []) {
-    const free = (idsByUrl.get(item.url) || []).find(id => !used.has(id));
-    if (free == null) continue;
-    used.add(free);
+    const tab = (idsByUrl.get(item.url) || []).find(t => !used.has(t.id));
+    if (!tab) continue;
+    used.add(tab.id);
     num++;
     const safeUrl = String(item.url).replace(/"/g, '&quot;');
     const reason = item.reason ? ` <span class="sweep-reason">${escapeHtml(item.reason)}</span>` : '';
     rows.push(`<div class="trow sweep-row" data-action="ai-sweep-toggle">
       <span class="tnum">${String(num).padStart(3, '0')}</span>
       <input type="checkbox" class="sweep-checkbox" data-tab-url="${safeUrl}" checked>
-      <span class="chip-text">${escapeHtml(item.title || item.url)}</span>${reason}
+      <span class="chip-text">${escapeHtml(tab.title || item.title || item.url)}</span>${reason}
     </div>`);
   }
   if (rows.length === 0) return { html: '', emitted: 0 };
@@ -1764,8 +1764,6 @@ document.addEventListener('click', async (e) => {
     const targets = extraIds.map(id => byId.get(id)).filter(Boolean);
     if (targets.length === 0) return;
     await archiveAndClose(targets);
-    // Clear dupes so the chip disappears until the next tick re-detects
-    await chrome.storage.local.set({ aiGroupCache: { ...(aiGroupCache || {}), dupes: [] } });
     await fetchOpenTabs();
     playCloseSound();
     showToast(`Closed ${targets.length} AI dupe${targets.length !== 1 ? 's' : ''} — saved to archive`);
