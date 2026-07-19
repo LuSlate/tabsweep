@@ -208,7 +208,7 @@ check('api: trailing slashes stripped',
 check('api: empty → null', ai.resolveApiEndpoints('') === null);
 
 // ---- grouping: mapCachedGroupsToTabs ----
-const grp = loadModule('grouping.js', '({ mapCachedGroupsToTabs })');
+const grp = loadModule('grouping.js', '({ mapCachedGroupsToTabs, mapCachedDupesToTabs })');
 
 const liveTabs = [
   { id: 101, url: 'https://github.com/a' },
@@ -240,6 +240,17 @@ mapped = grp.mapCachedGroupsToTabs(liveTabs, [
   { label: 'Partial', urls: ['https://github.com/a', 'https://closed.com/x'] },
 ]);
 check('map: group shrunk below 2 is dropped', mapped.length === 0);
+
+let dm = grp.mapCachedDupesToTabs(liveTabs, [['https://github.com/a', 'https://stackoverflow.com/b']]);
+check('dupes: cluster maps to keep + extras',
+  dm.length === 1 && dm[0].keepId === 101 && dm[0].extraIds.join(',') === '102');
+
+dm = grp.mapCachedDupesToTabs(liveTabs, [['https://x.com/c', 'https://x.com/c']]);
+check('dupes: duplicate urls claim distinct tabs',
+  dm.length === 1 && dm[0].keepId === 103 && dm[0].extraIds.join(',') === '104');
+
+dm = grp.mapCachedDupesToTabs(liveTabs, [['https://github.com/a', 'https://closed.com/x']]);
+check('dupes: cluster shrunk below 2 dissolves', dm.length === 0);
 
 // ---- sweep: nextSweepTime ----
 check('sweepTime: empty → null',      sweep.nextSweepTime('') === null);
