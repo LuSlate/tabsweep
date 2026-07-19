@@ -496,7 +496,7 @@ const AI_GROUPING_DEFAULTS = {
   endpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
   model: 'gpt-4o-mini',
-  auto: false,   // reserved for phase 2 (auto re-group on tab-set change)
+  auto: false,   // background aiAuto alarm every 30 min (background.js) when enabled
 };
 
 async function getAiGroupingSettings() {
@@ -514,6 +514,7 @@ async function populateSettingsPanel() {
   document.getElementById('setAiEndpoint').value       = ai.endpoint;
   document.getElementById('setAiKey').value            = ai.apiKey;
   document.getElementById('setAiModel').value          = ai.model;
+  document.getElementById('setAiAuto').checked         = ai.auto === true;
   document.getElementById('setAutoCloseEnabled').checked = ac.enabled;
   document.getElementById('setIntervalMin').value      = ac.intervalMin;
   document.getElementById('setTabStaleDays').value     = ac.tabStaleDays;
@@ -878,12 +879,12 @@ async function renderWorkspaces() {
    ---------------------------------------------------------------- */
 
 /**
- * renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn })
+ * renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN, autoGroupOn })
  *
  * The single row of commands under the top bar. Contextual commands
  * (sweep stale, close extra dashboards) appear only when relevant.
  */
-function renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn }) {
+function renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN, autoGroupOn }) {
   const bar = document.getElementById('commandBar');
   if (!bar) return;
   let html = '';
@@ -892,6 +893,9 @@ function renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn }) {
   }
   if (dashDupeN > 1) {
     html += `<button class="cmd" data-action="close-dashboard-dupes">&gt; Close ${dashDupeN - 1} extra dashboard${dashDupeN - 1 !== 1 ? 's' : ''}</button>`;
+  }
+  if (aiDupeN > 0) {
+    html += `<button class="cmd" data-action="close-ai-dupes">&gt; Close ${aiDupeN} AI dupe${aiDupeN !== 1 ? 's' : ''}</button>`;
   }
   html += `<button class="cmd" data-action="smart-group">&gt; Smart group</button>
     <button class="cmd" data-action="group-in-chrome">&gt; Group in Chrome</button>
@@ -1254,7 +1258,10 @@ async function renderStaticDashboard() {
   // --- Command bar ---
   const staleN   = realTabs.filter(t => isStaleTab(t, currentStaleMs)).length;
   const dashDupeN = openTabs.filter(t => t.isDashboard).length;
-  renderCommandBar({ staleN, dashDupeN, totalN: realTabs.length, autoGroupOn });
+  const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+  const aiDupeN = mapCachedDupesToTabs(realTabs, aiGroupCache && aiGroupCache.dupes)
+    .reduce((n, c) => n + c.extraIds.length, 0);
+  renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN: realTabs.length, autoGroupOn });
 
   // --- Footer stats ---
   const statTabs = document.getElementById('statTabs');
@@ -1265,6 +1272,13 @@ async function renderStaticDashboard() {
   if (lastSweep && lastSweep.at && lastSweep.at !== lastSweepSeen) {
     showToast(`Auto-swept ${lastSweep.count} stale tab${lastSweep.count !== 1 ? 's' : ''} — saved to archive`);
     await chrome.storage.local.set({ lastSweepSeen: lastSweep.at });
+  }
+
+  // --- AI tick notice (written by runAiTick; shown once) ---
+  const { lastAiTick, lastAiTickSeen } = await chrome.storage.local.get(['lastAiTick', 'lastAiTickSeen']);
+  if (lastAiTick && lastAiTick.at && lastAiTick.at !== lastAiTickSeen) {
+    showToast(`AI: ${lastAiTick.groups} groups · ${lastAiTick.dupes} dupes · ${lastAiTick.close} close suggestions`);
+    await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
   }
 
   // --- Render "Saved for Later" column ---
@@ -1374,7 +1388,7 @@ document.addEventListener('click', async (e) => {
         endpoint: document.getElementById('setAiEndpoint').value.trim() || AI_GROUPING_DEFAULTS.endpoint,
         apiKey:   document.getElementById('setAiKey').value.trim(),
         model:    document.getElementById('setAiModel').value.trim() || AI_GROUPING_DEFAULTS.model,
-        auto:     false,
+        auto:     document.getElementById('setAiAuto').checked,
       },
       autoClose: {
         enabled:        document.getElementById('setAutoCloseEnabled').checked,
@@ -1391,7 +1405,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // ---- Smart group: cloud AI semantic grouping ----
+  // ---- Smart group: one AI tick — groups + dupes + close suggestions ----
   if (action === 'smart-group') {
     const settings = await getAiGroupingSettings();
     if (!settings.apiKey) {
@@ -1401,14 +1415,40 @@ document.addEventListener('click', async (e) => {
     actionEl.disabled = true;
     actionEl.textContent = '⏳ Grouping…';
     try {
-      const groups = await callCloudGrouper(getRealTabs(), settings);
-      await chrome.storage.local.set({ aiGroupCache: { groups } });
-      showToast(`Smart grouped into ${groups.length} task${groups.length !== 1 ? 's' : ''}`);
+      const result = await runAiTick(settings, { force: true });
+      const dupeN = result.dupes.reduce((n, c) => n + c.length - 1, 0);
+      showToast(`AI: ${result.groups.length} groups · ${dupeN} dupes · ${result.close.length} close suggestions`);
+      // We just toasted the outcome — don't let the tick notice repeat it
+      const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
+      if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
     } catch (err) {
       console.error('[tabsweep] smart group failed:', err);
       showToast(`Smart group failed: ${err.message}`);
     }
-    await renderStaticDashboard(); // re-creates the button; shows AI task cards
+    await renderStaticDashboard();
+    return;
+  }
+
+  // ---- Re-group all: clear the cache, full (non-incremental) tick ----
+  if (action === 'regroup-all') {
+    const settings = await getAiGroupingSettings();
+    if (!settings.apiKey) {
+      showToast('Set an API key in ⚙ Settings first');
+      return;
+    }
+    actionEl.disabled = true;
+    actionEl.textContent = '⏳ Re-grouping…';
+    try {
+      await chrome.storage.local.remove('aiGroupCache');
+      const result = await runAiTick(settings, { force: true });
+      showToast(`Re-grouped into ${result.groups.length} tasks`);
+      const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
+      if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
+    } catch (err) {
+      console.error('[tabsweep] re-group failed:', err);
+      showToast(`Re-group failed: ${err.message}`);
+    }
+    await renderStaticDashboard();
     return;
   }
 
@@ -1661,6 +1701,24 @@ document.addEventListener('click', async (e) => {
     }
 
     showToast('Closed duplicates, kept one copy each');
+    return;
+  }
+
+  // ---- Close AI-detected duplicates, keep the first of each cluster ----
+  if (action === 'close-ai-dupes') {
+    const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+    const clusters = mapCachedDupesToTabs(getRealTabs(), aiGroupCache && aiGroupCache.dupes);
+    const extraIds = clusters.flatMap(c => c.extraIds);
+    const byId = new Map(openTabs.map(t => [t.id, t]));
+    const targets = extraIds.map(id => byId.get(id)).filter(Boolean);
+    if (targets.length === 0) return;
+    await archiveAndClose(targets);
+    // Clear dupes so the chip disappears until the next tick re-detects
+    await chrome.storage.local.set({ aiGroupCache: { ...(aiGroupCache || {}), dupes: [] } });
+    await fetchOpenTabs();
+    playCloseSound();
+    showToast(`Closed ${targets.length} AI dupe${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    renderStaticDashboard();
     return;
   }
 
