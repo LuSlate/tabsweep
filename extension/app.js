@@ -460,8 +460,8 @@ function shootConfetti(x, y) {
 /**
  * animateCardOut(card)
  *
- * Smoothly removes a mission card: fade + scale down, then confetti.
- * After the animation, checks if the grid is now empty.
+ * Smoothly removes a group section: fade + scale down, then confetti.
+ * After the animation, checks if the index is now empty.
  */
 function animateCardOut(card) {
   if (!card) return;
@@ -527,26 +527,17 @@ async function populateSettingsPanel() {
  * Shows a cheerful "Inbox zero" message when all domain cards are gone.
  */
 function checkAndShowEmptyState() {
-  const missionsEl = document.getElementById('openTabsMissions');
-  if (!missionsEl) return;
+  const groupsEl = document.getElementById('openTabsGroups');
+  if (!groupsEl) return;
 
-  const remaining = missionsEl.querySelectorAll('.mission-card:not(.closing)').length;
+  const remaining = groupsEl.querySelectorAll('.group:not(.closing)').length;
   if (remaining > 0) return;
 
-  missionsEl.innerHTML = `
-    <div class="missions-empty-state">
-      <div class="empty-checkmark">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-        </svg>
-      </div>
-      <div class="empty-title">All clear</div>
-      <div class="empty-subtitle">No open tabs</div>
-    </div>
-  `;
-
-  const countEl = document.getElementById('openTabsSectionCount');
-  if (countEl) countEl.textContent = '0 domains';
+  groupsEl.innerHTML = `
+    <div class="allclear">
+      <strong>All clear</strong>
+      No open tabs
+    </div>`;
 }
 
 /**
@@ -568,16 +559,6 @@ function timeAgo(dateStr) {
   if (diffHours < 24) return diffHours + ' hr' + (diffHours !== 1 ? 's' : '') + ' ago';
   if (diffDays === 1) return 'yesterday';
   return diffDays + ' days ago';
-}
-
-/**
- * getGreeting() — "Good morning / afternoon / evening"
- */
-function getGreeting() {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
 }
 
 /**
@@ -685,16 +666,6 @@ function smartTitle(title, url) {
 }
 
 
-/* ----------------------------------------------------------------
-   SVG ICON STRINGS
-   ---------------------------------------------------------------- */
-const ICONS = {
-  tabs:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" /></svg>`,
-  close:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>`,
-  archive: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25 2.25M12 13.875l2.25-2.25M12 13.875l-2.25 2.25M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>`,
-  focus:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" /></svg>`,
-};
-
 
 /* ----------------------------------------------------------------
    IN-MEMORY STORE FOR OPEN-TAB GROUPS
@@ -725,25 +696,6 @@ function getRealTabs() {
   });
 }
 
-/**
- * checkDashboardDupes()
- *
- * Counts how many dashboard pages are open. If more than 1,
- * shows a banner offering to close the extras.
- */
-function checkDashboardDupes() {
-  const dashboardTabs = openTabs.filter(t => t.isDashboard);
-  const banner  = document.getElementById('dashboardDupeBanner');
-  const countEl = document.getElementById('dashboardDupeCount');
-  if (!banner) return;
-
-  if (dashboardTabs.length > 1) {
-    if (countEl) countEl.textContent = dashboardTabs.length;
-    banner.style.display = 'flex';
-  } else {
-    banner.style.display = 'none';
-  }
-}
 
 
 /* ----------------------------------------------------------------
@@ -755,25 +707,6 @@ function checkDashboardDupes() {
 // swapped for the autoClose setting once settings load
 // (renderStaticDashboard).
 let currentStaleMs = DAY_MS;
-
-/**
- * checkStaleTabs()
- *
- * Shows the stale banner with a count when stale tabs exist.
- */
-function checkStaleTabs() {
-  const staleTabs = getRealTabs().filter(t => isStaleTab(t, currentStaleMs));
-  const banner  = document.getElementById('staleBanner');
-  const countEl = document.getElementById('staleCount');
-  if (!banner) return;
-
-  if (staleTabs.length > 0) {
-    if (countEl) countEl.textContent = staleTabs.length;
-    banner.style.display = 'flex';
-  } else {
-    banner.style.display = 'none';
-  }
-}
 
 /**
  * sweepStaleTabs()
@@ -907,32 +840,14 @@ async function deleteWorkspace(id) {
  * up to 8 plain (non-interactive) chips, Restore/Delete actions.
  */
 function renderWorkspaceCard(ws) {
-  const chips = ws.tabs.slice(0, 8).map(t => {
-    const label = cleanTitle(smartTitle(stripTitleNoise(t.title || ''), t.url), '');
-    let domain = '';
-    try { domain = new URL(t.url).hostname; } catch {}
-    const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    const safeTitle  = label.replace(/"/g, '&quot;');
-    return `<div class="page-chip" title="${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="">` : ''}
-      <span class="chip-text">${label}</span>
-    </div>`;
-  }).join('') + (ws.tabs.length > 8 ? `<div class="page-chip">+${ws.tabs.length - 8} more</div>` : '');
-
-  return `
-    <div class="mission-card domain-card has-neutral-bar" data-workspace-id="${ws.id}">
-      <div class="mission-content">
-        <div class="mission-top">
-          <span class="mission-name">${escapeHtml(ws.name)}</span>
-          <span class="open-tabs-badge">saved ${timeAgo(ws.savedAt)}</span>
-        </div>
-        <div class="mission-pages">${chips}</div>
-        <div class="actions">
-          <button class="action-btn" data-action="restore-workspace" data-workspace-id="${ws.id}">Restore all</button>
-          <button class="action-btn close-tabs" data-action="delete-workspace" data-workspace-id="${ws.id}">Delete</button>
-        </div>
-      </div>
-    </div>`;
+  return `<div class="ws-row" data-workspace-id="${ws.id}">
+    <span class="ws-name">${escapeHtml(ws.name)}</span>
+    <span class="ws-meta">${ws.tabs.length} tab${ws.tabs.length !== 1 ? 's' : ''} · saved ${timeAgo(ws.savedAt)}</span>
+    <span class="ws-actions">
+      <button class="cmd" data-action="restore-workspace" data-workspace-id="${ws.id}">Restore</button>
+      <button class="cmd danger" data-action="delete-workspace" data-workspace-id="${ws.id}">Delete</button>
+    </span>
+  </div>`;
 }
 
 /**
@@ -942,7 +857,7 @@ function renderWorkspaceCard(ws) {
  */
 async function renderWorkspaces() {
   const section  = document.getElementById('workspacesSection');
-  const missions = document.getElementById('workspacesMissions');
+  const missions = document.getElementById('workspacesList');
   const countEl  = document.getElementById('workspacesCount');
   if (!section || !missions) return;
 
@@ -959,40 +874,30 @@ async function renderWorkspaces() {
 
 
 /* ----------------------------------------------------------------
-   OVERFLOW CHIPS ("+N more" expand button in domain cards)
+   COMMAND BAR — contextual action row under the top bar
    ---------------------------------------------------------------- */
 
-function buildOverflowChips(hiddenTabs, urlCounts = {}) {
-  const hiddenChips = hiddenTabs.map(tab => {
-    const label    = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
-    const count    = urlCounts[tab.url] || 1;
-    const dupeTag  = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const chipClass = count > 1 ? ' chip-has-dupes' : '';
-    const staleClass = isStaleTab(tab, currentStaleMs) ? ' stale' : '';
-    const safeUrl   = (tab.url || '').replace(/"/g, '&quot;');
-    const safeTitle = label.replace(/"/g, '&quot;');
-    let domain = '';
-    try { domain = new URL(tab.url).hostname; } catch {}
-    const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    return `<div class="page-chip clickable${chipClass}${staleClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
-      ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
-      <span class="chip-text">${label}</span>${dupeTag}
-      <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
-        </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
-        </button>
-      </div>
-    </div>`;
-  }).join('');
-
-  return `
-    <div class="page-chips-overflow" style="display:none">${hiddenChips}</div>
-    <div class="page-chip page-chip-overflow clickable" data-action="expand-chips">
-      <span class="chip-text">+${hiddenTabs.length} more</span>
-    </div>`;
+/**
+ * renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn })
+ *
+ * The single row of commands under the top bar. Contextual commands
+ * (sweep stale, close extra dashboards) appear only when relevant.
+ */
+function renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn }) {
+  const bar = document.getElementById('commandBar');
+  if (!bar) return;
+  let html = '';
+  if (staleN > 0) {
+    html += `<button class="cmd" data-action="sweep-stale-tabs">&gt; Sweep ${staleN} stale</button>`;
+  }
+  if (dashDupeN > 1) {
+    html += `<button class="cmd" data-action="close-dashboard-dupes">&gt; Close ${dashDupeN - 1} extra dashboard${dashDupeN - 1 !== 1 ? 's' : ''}</button>`;
+  }
+  html += `<button class="cmd" data-action="smart-group">&gt; Smart group</button>
+    <button class="cmd" data-action="group-in-chrome">&gt; Group in Chrome</button>
+    <label class="cmd auto-toggle"><input type="checkbox" data-action="toggle-auto-group" ${autoGroupOn ? 'checked' : ''}>Auto</label>
+    <button class="cmd danger" data-action="close-all-open-tabs">&gt; Close all ${totalN}</button>`;
+  bar.innerHTML = html;
 }
 
 
@@ -1012,12 +917,15 @@ function escapeHtml(str) {
 }
 
 /**
- * renderDomainCard(group, groupIndex)
+ * renderGroupSection(group, startNum)
+ *   → { html: string, emitted: number }
  *
- * Builds the HTML for one domain group card.
- * group = { domain: string, tabs: [{ url, title, id, windowId, active }] }
+ * One black-band group + globally numbered tab rows. startNum is the
+ * count of rows already emitted by earlier groups (0-based); row numbers
+ * are 1-based and zero-padded to 3. emitted = rows this group emitted,
+ * so the caller chains: startNum += result.emitted.
  */
-function renderDomainCard(group) {
+function renderGroupSection(group, startNum) {
   const tabs      = group.tabs || [];
   const tabCount  = tabs.length;
   const isLanding = group.domain === '__landing-pages__';
@@ -1026,20 +934,9 @@ function renderDomainCard(group) {
   // Count duplicates (exact URL match)
   const urlCounts = {};
   for (const tab of tabs) urlCounts[tab.url] = (urlCounts[tab.url] || 0) + 1;
-  const dupeUrls   = Object.entries(urlCounts).filter(([, c]) => c > 1);
-  const hasDupes   = dupeUrls.length > 0;
+  const dupeUrls    = Object.entries(urlCounts).filter(([, c]) => c > 1);
+  const hasDupes    = dupeUrls.length > 0;
   const totalExtras = dupeUrls.reduce((s, [, c]) => s + c - 1, 0);
-
-  const tabBadge = `<span class="open-tabs-badge">
-    ${ICONS.tabs}
-    ${tabCount} tab${tabCount !== 1 ? 's' : ''} open
-  </span>`;
-
-  const dupeBadge = hasDupes
-    ? `<span class="open-tabs-badge dupe">
-        ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}
-      </span>`
-    : '';
 
   // Deduplicate for display: show each URL once, with (Nx) badge if duped
   const seen = new Set();
@@ -1052,66 +949,66 @@ function renderDomainCard(group) {
   const extraCount  = uniqueTabs.length - visibleTabs.length;
 
   const cardTitle = isLanding ? 'Homepages' : (group.label || friendlyDomain(group.domain));
+  const bandTitle = group.domain.startsWith('__task-') ? `Task · ${cardTitle}` : cardTitle;
 
-  const pageChips = visibleTabs.map(tab => {
+  let num = startNum;
+  const rowHtml = (tab) => {
+    num++;
     let label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), group.domain);
-    // For localhost tabs, prepend port number so you can tell projects apart
     try {
       const parsed = new URL(tab.url);
       if (parsed.hostname === 'localhost' && parsed.port) label = `${parsed.port} ${label}`;
     } catch {}
-    const count    = urlCounts[tab.url];
-    const dupeTag  = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const chipClass = count > 1 ? ' chip-has-dupes' : '';
+    const count      = urlCounts[tab.url];
+    const dupeTag    = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
     const staleClass = isStaleTab(tab, currentStaleMs) ? ' stale' : '';
-    const safeUrl   = (tab.url || '').replace(/"/g, '&quot;');
-    const safeTitle = label.replace(/"/g, '&quot;');
+    const safeUrl    = (tab.url || '').replace(/"/g, '&quot;');
+    const safeTitle  = label.replace(/"/g, '&quot;');
     let domain = '';
     try { domain = new URL(tab.url).hostname; } catch {}
     const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    return `<div class="page-chip clickable${chipClass}${staleClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
+    return `<div class="trow clickable${staleClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
+      <span class="tnum">${String(num).padStart(3, '0')}</span>
       ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
       <span class="chip-text">${label}</span>${dupeTag}
       <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
+        <button class="chip-action" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
         </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
+        <button class="chip-action" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
     </div>`;
-  }).join('') + (extraCount > 0 ? buildOverflowChips(uniqueTabs.slice(8), urlCounts) : '');
+  };
 
-  let actionsHtml = `
-    <button class="action-btn" data-action="stash-group" data-domain-id="${stableId}" title="Save this group and close its tabs">
-      Stash
-    </button>
-    <button class="action-btn close-tabs" data-action="close-domain-tabs" data-domain-id="${stableId}">
-      ${ICONS.close}
-      Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}
-    </button>`;
+  const visibleRows = visibleTabs.map(rowHtml).join('');
+  const hiddenRows  = extraCount > 0 ? uniqueTabs.slice(8).map(rowHtml).join('') : '';
+  const overflow = extraCount > 0
+    ? `<div class="grows-hidden" style="display:none">${hiddenRows}</div>
+       <div class="trow trow-overflow clickable" data-action="expand-chips">
+         <span class="chip-text">+${extraCount} more</span>
+       </div>`
+    : '';
 
-  if (hasDupes) {
-    const dupeUrlsEncoded = dupeUrls.map(([url]) => encodeURIComponent(url)).join(',');
-    actionsHtml += `
-      <button class="action-btn" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}">
-        Close ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}
-      </button>`;
-  }
+  const dupeUrlsEncoded = hasDupes ? dupeUrls.map(([url]) => encodeURIComponent(url)).join(',') : '';
+  const bandActions = `
+    ${hasDupes ? `<button class="cmd" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}">Dedup ${totalExtras}</button>` : ''}
+    <button class="cmd" data-action="stash-group" data-domain-id="${stableId}" title="Save this group and close its tabs">Stash</button>
+    <button class="cmd" data-action="close-domain-tabs" data-domain-id="${stableId}">Close ${tabCount}</button>`;
 
-  return `
-    <div class="mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}" data-domain-id="${stableId}">
-      <div class="mission-content">
-        <div class="mission-top">
-          <span class="mission-name">${escapeHtml(cardTitle)}</span>
-          ${tabBadge}
-          ${dupeBadge}
-        </div>
-        <div class="mission-pages">${pageChips}</div>
-        <div class="actions">${actionsHtml}</div>
-      </div>
-    </div>`;
+  const html = `<section class="group" data-domain-id="${stableId}">
+    <div class="band">
+      <span class="band-title">${escapeHtml(bandTitle)}</span>
+      <span class="band-right">
+        <span class="band-actions">${bandActions}</span>
+        <span class="band-count">${tabCount}</span>
+      </span>
+    </div>
+    <div class="grows">${visibleRows}${overflow}</div>
+  </section>`;
+
+  return { html, emitted: num - startNum };
 }
 
 
@@ -1230,7 +1127,7 @@ function renderArchiveItem(item) {
  * renderStaticDashboard()
  *
  * The main render function:
- * 1. Paints greeting + date
+ * 1. Paints date + total count
  * 2. Fetches open tabs via chrome.tabs.query()
  * 3. Groups tabs by domain (with landing pages pulled out to their own group)
  * 4. Renders domain cards
@@ -1239,14 +1136,14 @@ function renderArchiveItem(item) {
  */
 async function renderStaticDashboard() {
   // --- Header ---
-  const greetingEl = document.getElementById('greeting');
-  const dateEl     = document.getElementById('dateDisplay');
-  if (greetingEl) greetingEl.textContent = getGreeting();
-  if (dateEl)     dateEl.textContent     = getDateDisplay();
+  const dateEl = document.getElementById('dateDisplay');
+  if (dateEl) dateEl.textContent = getDateDisplay();
 
   // --- Fetch tabs ---
   await fetchOpenTabs();
   const realTabs = getRealTabs();
+  const totalEl = document.getElementById('totalCount');
+  if (totalEl) totalEl.textContent = `${realTabs.length} tabs`;
 
   // Stale threshold follows the autoClose setting (single source of truth
   // shared by the banner, the chip dimming, and the background alarm)
@@ -1341,28 +1238,27 @@ async function renderStaticDashboard() {
     return b.tabs.length - a.tabs.length;
   });
 
-  // --- Render domain cards ---
-  const openTabsSection      = document.getElementById('openTabsSection');
-  const openTabsMissionsEl   = document.getElementById('openTabsMissions');
-  const openTabsSectionCount = document.getElementById('openTabsSectionCount');
-  const openTabsSectionTitle = document.getElementById('openTabsSectionTitle');
-
-  if (domainGroups.length > 0 && openTabsSection) {
-    if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
-    openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn sm" data-action="smart-group">Smart group</button> <button class="action-btn sm" data-action="group-in-chrome">Group in Chrome</button> <label class="action-btn sm auto-toggle"><input type="checkbox" data-action="toggle-auto-group" ${autoGroupOn ? 'checked' : ''}>Auto</label> <button class="action-btn sm close-tabs" data-action="close-all-open-tabs">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
-    openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
-    openTabsSection.style.display = 'block';
-  } else if (openTabsSection) {
-    openTabsSection.style.display = 'none';
+  // --- Render domain groups ---
+  const groupsEl = document.getElementById('openTabsGroups');
+  if (groupsEl && domainGroups.length > 0) {
+    let startNum = 0;
+    groupsEl.innerHTML = domainGroups.map(g => {
+      const r = renderGroupSection(g, startNum);
+      startNum += r.emitted;
+      return r.html;
+    }).join('');
+  } else if (groupsEl) {
+    checkAndShowEmptyState();
   }
+
+  // --- Command bar ---
+  const staleN   = realTabs.filter(t => isStaleTab(t, currentStaleMs)).length;
+  const dashDupeN = openTabs.filter(t => t.isDashboard).length;
+  renderCommandBar({ staleN, dashDupeN, totalN: realTabs.length, autoGroupOn });
 
   // --- Footer stats ---
   const statTabs = document.getElementById('statTabs');
   if (statTabs) statTabs.textContent = openTabs.length;
-
-  // --- Check for duplicate dashboard tabs ---
-  checkDashboardDupes();
-  checkStaleTabs();
 
   // --- Auto-sweep notice (written by the background alarm, Task 6) ---
   const { lastSweep, lastSweepSeen } = await chrome.storage.local.get(['lastSweep', 'lastSweepSeen']);
@@ -1402,13 +1298,8 @@ document.addEventListener('click', async (e) => {
   if (action === 'close-dashboard-dupes') {
     await closeDashboardDupes();
     playCloseSound();
-    const banner = document.getElementById('dashboardDupeBanner');
-    if (banner) {
-      banner.style.transition = 'opacity 0.15s linear';
-      banner.style.opacity = '0';
-      setTimeout(() => { banner.style.display = 'none'; banner.style.opacity = '1'; }, 150);
-    }
     showToast('Closed extra dashboard tabs');
+    renderStaticDashboard();
     return;
   }
 
@@ -1445,10 +1336,23 @@ document.addEventListener('click', async (e) => {
     actionEl.disabled = true;
     actionEl.textContent = '⏳ Testing…';
     try {
-      const models = await listModels(settings);
-      document.getElementById('modelList').innerHTML =
-        models.map(m => `<option value="${escapeHtml(m)}">`).join('');
-      showToast(`Connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`);
+      let models = null;
+      try {
+        models = await listModels(settings);
+      } catch {
+        // Some endpoints (e.g. deepseek/anthropic proxy) have no /models
+        // listing — fall back to a 1-token chat probe. Its error, if any,
+        // is the meaningful one (bad key / bad URL / provider message).
+        const model = document.getElementById('setAiModel').value.trim() || AI_GROUPING_DEFAULTS.model;
+        await probeChatEndpoint({ ...settings, model });
+      }
+      if (models) {
+        document.getElementById('modelList').innerHTML =
+          models.map(m => `<option value="${escapeHtml(m)}">`).join('');
+        showToast(`Connected — ${models.length} model${models.length !== 1 ? 's' : ''} available`);
+      } else {
+        showToast('Connected — this endpoint has no model listing');
+      }
     } catch (err) {
       console.error('[tabsweep] test connection failed:', err);
       showToast(`Connection failed: ${err.message}`);
@@ -1483,7 +1387,7 @@ document.addEventListener('click', async (e) => {
     showToast('Settings saved');
     const ac = await getAutoCloseSettings();
     currentStaleMs = ac.tabStaleDays * DAY_MS;
-    checkStaleTabs(); // banner count reflects the new threshold immediately
+    renderStaticDashboard(); // refresh the command bar with new stale threshold
     return;
   }
 
@@ -1514,11 +1418,11 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  const card = actionEl.closest('.mission-card');
+  const card = actionEl.closest('.group');
 
   // ---- Expand overflow chips ("+N more") ----
   if (action === 'expand-chips') {
-    const overflowContainer = actionEl.parentElement.querySelector('.page-chips-overflow');
+    const overflowContainer = actionEl.parentElement.querySelector('.grows-hidden');
     if (overflowContainer) {
       overflowContainer.style.display = 'contents';
       actionEl.remove();
@@ -1548,7 +1452,7 @@ document.addEventListener('click', async (e) => {
     playCloseSound();
 
     // Animate the chip row out
-    const chip = actionEl.closest('.page-chip');
+    const chip = actionEl.closest('.trow');
     if (chip) {
       const rect = chip.getBoundingClientRect();
       shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
@@ -1557,11 +1461,11 @@ document.addEventListener('click', async (e) => {
       chip.style.transform  = 'scale(0.8)';
       setTimeout(() => {
         chip.remove();
-        // If the card now has no tabs, remove it too
-        const parentCard = document.querySelector('.mission-card:has(.mission-pages:empty)');
-        if (parentCard) animateCardOut(parentCard);
-        document.querySelectorAll('.mission-card').forEach(c => {
-          if (c.querySelectorAll('.page-chip[data-action="focus-tab"]').length === 0) {
+        // If the group now has no rows, remove it too
+        const parentGroup = document.querySelector('.group:has(.grows:empty)');
+        if (parentGroup) animateCardOut(parentGroup);
+        document.querySelectorAll('.group').forEach(c => {
+          if (c.querySelectorAll('.trow[data-action="focus-tab"]').length === 0) {
             animateCardOut(c);
           }
         });
@@ -1599,7 +1503,7 @@ document.addEventListener('click', async (e) => {
     await fetchOpenTabs();
 
     // Animate chip out
-    const chip = actionEl.closest('.page-chip');
+    const chip = actionEl.closest('.trow');
     if (chip) {
       chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
       chip.style.opacity    = '0';
@@ -1745,22 +1649,15 @@ document.addEventListener('click', async (e) => {
     actionEl.style.opacity    = '0';
     setTimeout(() => actionEl.remove(), 200);
 
-    // Remove dupe badges from the card
+    // Remove dupe badges from the group; update the count badge
     if (card) {
       card.querySelectorAll('.chip-dupe-badge').forEach(b => {
         b.style.transition = 'opacity 0.2s linear';
         b.style.opacity    = '0';
         setTimeout(() => b.remove(), 200);
       });
-      card.querySelectorAll('.open-tabs-badge').forEach(badge => {
-        if (badge.textContent.includes('duplicate')) {
-          badge.style.transition = 'opacity 0.2s linear';
-          badge.style.opacity    = '0';
-          setTimeout(() => badge.remove(), 200);
-        }
-      });
-      card.classList.remove('has-amber-bar');
-      card.classList.add('has-neutral-bar');
+      const bandCount = card.querySelector('.band-count');
+      if (bandCount) bandCount.textContent = card.querySelectorAll('.trow[data-action="focus-tab"]').length;
     }
 
     showToast('Closed duplicates, kept one copy each');
@@ -1775,7 +1672,7 @@ document.addEventListener('click', async (e) => {
     await closeTabsByUrls(allUrls);
     playCloseSound();
 
-    document.querySelectorAll('#openTabsMissions .mission-card').forEach(c => {
+    document.querySelectorAll('#openTabsGroups .group').forEach(c => {
       shootConfetti(
         c.getBoundingClientRect().left + c.offsetWidth / 2,
         c.getBoundingClientRect().top  + c.offsetHeight / 2
