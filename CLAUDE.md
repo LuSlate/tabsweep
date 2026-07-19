@@ -51,7 +51,7 @@ extension/
 - Dashboard: `<script>` tags in `index.html` (after optional `config.local.js`)
 - Service worker: `importScripts('grouping.js', 'sweep.js')` in `background.js`
 
-This keeps dashboard cards and background auto-grouping / auto-sweep on the same definitions of "group title" and "stale". Do not introduce ES modules for these without a dual-load plan; `importScripts` cannot load ESM.
+This keeps dashboard groups and background auto-grouping / auto-sweep on the same definitions of "group title" and "stale". Do not introduce ES modules for these without a dual-load plan; `importScripts` cannot load ESM.
 
 `ai-grouping.js` is dashboard-only (network call on explicit "Smart group" click). Background auto-grouping stays domain-based and free.
 
@@ -59,11 +59,15 @@ This keeps dashboard cards and background auto-grouping / auto-sweep on the same
 
 1. `fetchOpenTabs()` → `chrome.tabs.query`, map to local shape (`openerTabId`, `groupId`, `lastAccessed`, `isDashboard`, …).
 2. `getRealTabs()` filters to http(s)/file and non-dashboard pages.
-3. `computeTaskGroups(realTabs)` claims some tabs into task cards.
-4. Remaining tabs → domain cards, with a special `__landing-pages__` bucket and optional custom groups from `config.local.js`.
-5. `renderDomainCard` / workspaces / deferred column; actions via one delegated `document` click listener on `[data-action]`.
+3. `computeTaskGroups(realTabs)` claims some tabs into task groups.
+4. Remaining tabs → domain groups, with a special `__landing-pages__` bucket and optional custom groups from `config.local.js`.
+5. `renderGroupSection(group, startNum)` (caller chains `startNum` for continuous numbering) / workspace rows / deferred section; actions via one delegated `document` click listener on `[data-action]`.
 
-Closing labeled/task cards uses exact-URL matching so a task card cannot close unrelated same-domain tabs.
+Closing labeled/task groups uses exact-URL matching so a task group cannot close unrelated same-domain tabs.
+
+### Index-table UI (`index.html` + `style.css`)
+
+Newspaper-directory layout, light mode only: `.topbar` (brand / date / tab count / settings gear), `.commandbar` (contextual commands filled by `renderCommandBar` — sweep/dupe alerts, Smart group, Group in Chrome, Auto toggle, Close all), then sections of `.group` = black `.band` header (hover-revealed `.band-actions`) + `.grows` of `.trow` rows numbered globally `001…N` (`.tnum`). Workspaces and Saved-for-later are the same band+row pattern, not cards. No greeting, no banner columns. Tokens: `--bg:#fff --ink:#000 --accent:#0000ee` (links/active) and `--mark:#ff5500` (checked/selected/badges, `::selection`); zero border-radius; all motion ≤0.2s `linear`.
 
 ### Task grouping decision order (`grouping.js` → `computeTaskGroups`)
 
@@ -87,9 +91,10 @@ Native tab group projection ("Group in Chrome" + background auto-group) stays do
 
 - Opt-in: only when user sets API key and clicks **Smart group**. No key → no network.
 - Settings: storage `aiGrouping` = `{ endpoint, apiKey, model, auto }` (`auto` reserved, not wired).
-- Wire formats: OpenAI `chat/completions` and Anthropic `messages` via `resolveApiEndpoints` (host/`/messages` / `/chat/completions` heuristics; DeepSeek anthropic proxy supported).
+- Wire formats: OpenAI `chat/completions` and Anthropic `messages` via `resolveApiEndpoints` (host/`/messages` / `/chat/completions` heuristics; DeepSeek anthropic proxy supported — its model listing lives on the OpenAI root with Bearer auth).
+- Response text: `extractResponseText` — Anthropic `content` may lead with `thinking` blocks or be a plain string (proxies); never assume `content[0].text`.
 - Cache: `aiGroupCache = { groups: [{ label, urls[] }] }` — URLs, not tab ids (ids die on restart).
-- Cap: 200 most-recently-accessed tabs; overflow stays on domain cards.
+- Cap: 200 most-recently-accessed tabs; overflow stays on domain groups.
 - Requires `host_permissions` for the user's endpoint (manifest has broad http(s) for this).
 
 ### Storage keys (`chrome.storage.local`)
@@ -116,7 +121,7 @@ Loaded from `index.html` before `grouping.js`. **Not** loaded by the service wor
 
 ### UI / safety notes that have already bitten
 
-- AI and title-derived labels go through `escapeHtml` before `innerHTML` card titles.
+- AI and title-derived labels go through `escapeHtml` before `innerHTML` band titles.
 - Event handling is `data-action` delegation — add actions there, not per-button listeners.
 - `sidePanel.open` must not be preceded by `await` in the command path.
 
