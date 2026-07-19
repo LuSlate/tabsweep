@@ -33,7 +33,8 @@ extension/
   grouping.js        DOM-free shared grouping (dual-loaded)
   sweep.js           DOM-free stale/archive logic (dual-loaded)
   ai-grouping.js     DOM-free cloud grouper + AI tick orchestrator (dual-loaded)
-  selfcheck.js       Node asserts for the three DOM-free modules
+  i18n.js            zh/en dictionary + t() + init/toggle (dashboard only)
+  selfcheck.js       Node asserts for the DOM-free modules
   style.css
   config.local.js    Optional personal overrides (gitignored; may be absent)
 ```
@@ -68,6 +69,10 @@ Closing labeled/task groups uses exact-URL matching so a task group cannot close
 ### Index-table UI (`index.html` + `style.css`)
 
 Newspaper-directory layout, light mode only: `.topbar` (brand / date / tab count / settings gear), `.commandbar` (contextual commands filled by `renderCommandBar` — sweep/dupe alerts, Smart group, Group in Chrome, Auto toggle, Close all), then sections of `.group` = black `.band` header (hover-revealed `.band-actions`) + `.grows` of `.trow` rows numbered globally `001…N` (`.tnum`). An AI-sweep review band (checkbox rows, confirm/dismiss) renders ahead of all groups when suggestions exist and takes the first numbers. Workspaces and Saved-for-later are the same band+row pattern, not cards. No greeting, no banner columns. Tokens: `--bg:#fff --ink:#000 --accent:#0000ee` (links/active) and `--mark:#ff5500` (checked/selected/badges, `::selection`); zero border-radius; all motion ≤0.2s `linear`.
+
+### i18n (`i18n.js`)
+
+zh/en UI with a topbar `#langToggle` (data-action `toggle-lang`); choice persists in storage key `lang`, unset → `pickLang(navigator.language)`. Static markup uses `data-i18n` / `data-i18n-placeholder` (labels wrapping inputs must wrap their text node in a `<span data-i18n>` so `applyStaticI18n` can't destroy the input); dynamic strings call `t(key, vars)` with `{n}` interpolation and the `{s}` English-plural var. Dictionary key parity between en/zh is selfcheck-enforced — add keys to both languages or the suite fails. Deliberately NOT `_locales`/`chrome.i18n` (no runtime manual switch).
 
 ### Task grouping decision order (`grouping.js` → `computeTaskGroups`)
 
@@ -114,6 +119,7 @@ Native tab group projection ("Group in Chrome" + background auto-group) stays do
 | `lastAiSig` | Tab-URL signature (AI tick change detection) |
 | `lastAiTick` / `lastAiTickSeen` | AI tick toast once |
 | `lastSweep` / `lastSweepSeen` | Background sweep toast once |
+| `lang` | UI language override (`'en' \| 'zh'`; unset → browser) |
 
 ### Personal config (`extension/config.local.js`, gitignored)
 

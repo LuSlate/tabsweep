@@ -269,5 +269,28 @@ const atPast = sweep.nextSweepTime(pastHHMM);
 check('sweepTime: past clock time → next occurrence (future, ≤24h)',
   typeof atPast === 'number' && atPast > Date.now() && atPast <= Date.now() + DAY);
 
+// ---- i18n ----
+const i18n = loadModule('i18n.js', '({ I18N, pickLang, setLang, currentLang, t })');
+
+check('i18n: pickLang zh variants', i18n.pickLang('zh-CN') === 'zh' && i18n.pickLang('zh') === 'zh' && i18n.pickLang('zh-TW') === 'zh');
+check('i18n: pickLang non-zh → en', i18n.pickLang('en-US') === 'en' && i18n.pickLang('') === 'en' && i18n.pickLang(undefined) === 'en');
+check('i18n: setLang normalizes', (i18n.setLang('zh'), i18n.currentLang()) === 'zh' && (i18n.setLang('fr'), i18n.currentLang()) === 'en');
+
+i18n.setLang('en');
+check('i18n: t en lookup', i18n.t('cmdSmartGroup') === '> Smart group');
+check('i18n: t interpolation', i18n.t('cmdCloseAll', { n: 7 }) === '> Close all 7');
+check('i18n: t plural var', i18n.t('tabsCount', { n: 1, s: '' }) === '1 tab' && i18n.t('itemsCount', { n: 3, s: 's' }) === '3 items');
+i18n.setLang('zh');
+check('i18n: t zh lookup', i18n.t('cmdSmartGroup') === '> 智能分组');
+check('i18n: t zh interpolation', i18n.t('cmdCloseAll', { n: 7 }) === '> 关闭全部 7');
+check('i18n: unknown key falls back to en then key',
+  i18n.t('tabsCount', { n: 2, s: 's' }) === '2 个标签' && i18n.t('no-such-key') === 'no-such-key');
+i18n.setLang('en');
+
+// dictionary parity: every en key exists in zh and vice versa
+const enKeys = Object.keys(i18n.I18N.en).sort().join(',');
+const zhKeys = Object.keys(i18n.I18N.zh).sort().join(',');
+check('i18n: en/zh key parity', enKeys === zhKeys);
+
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
 console.log('selfcheck OK');

@@ -19,7 +19,8 @@
     <div class="topbar-right">
       <span id="dateDisplay"></span>
       <span id="totalCount"></span>
-      <button class="settings-gear" data-action="toggle-settings" title="Settings" aria-label="Settings">⚙</button>
+      <button class="settings-gear" id="langToggle" data-action="toggle-lang" title="Switch language / 切换语言">中</button>
+      <button class="settings-gear" data-action="toggle-settings" title="Settings / 设置" aria-label="Settings / 设置">⚙</button>
     </div>
   </header>
 
@@ -28,44 +29,44 @@
        Hidden by default; toggled by the gear button
        ================================================================ -->
   <div class="settings-panel" id="settingsPanel" style="display:none">
-    <div class="settings-title">AI grouping</div>
-    <label class="settings-field">Endpoint
+    <div class="settings-title" data-i18n="aiGrouping">AI grouping</div>
+    <label class="settings-field"><span data-i18n="endpoint">Endpoint</span>
       <input type="text" id="setAiEndpoint" placeholder="…/v1/chat/completions or https://api.anthropic.com" autocomplete="off">
     </label>
-    <label class="settings-field">API key
+    <label class="settings-field"><span data-i18n="apiKeyLabel">API key</span>
       <input type="password" id="setAiKey" placeholder="sk-..." autocomplete="off">
     </label>
-    <label class="settings-field">Model
+    <label class="settings-field"><span data-i18n="modelLabel">Model</span>
       <input type="text" id="setAiModel" placeholder="gpt-4o-mini / claude-haiku-4-5" autocomplete="off" list="modelList">
       <datalist id="modelList"></datalist>
     </label>
-    <button class="action-btn" data-action="test-connection">Test connection &amp; list models</button>
+    <button class="action-btn" data-action="test-connection" data-i18n="testConnection">Test connection &amp; list models</button>
 
     <label class="settings-field settings-inline">
-      <input type="checkbox" id="setAiAuto"> Auto group in background (every 30 min)
+      <input type="checkbox" id="setAiAuto"> <span data-i18n="autoBackground">Auto group in background (every 30 min)</span>
     </label>
-    <button class="action-btn" data-action="regroup-all">Re-group all tabs now</button>
+    <button class="action-btn" data-action="regroup-all" data-i18n="regroupAll">Re-group all tabs now</button>
 
-    <div class="settings-title">Auto-close</div>
+    <div class="settings-title" data-i18n="autoCloseTitle">Auto-close</div>
     <label class="settings-field settings-inline">
-      <input type="checkbox" id="setAutoCloseEnabled"> Scheduled background sweep
+      <input type="checkbox" id="setAutoCloseEnabled"> <span data-i18n="scheduledSweep">Scheduled background sweep</span>
     </label>
     <div class="settings-grid">
-      <label class="settings-field">Scan interval (min)
+      <label class="settings-field"><span data-i18n="scanInterval">Scan interval (min)</span>
         <input type="number" id="setIntervalMin" min="1" step="1">
       </label>
-      <label class="settings-field">Close tabs idle (days)
+      <label class="settings-field"><span data-i18n="closeTabsIdle">Close tabs idle (days)</span>
         <input type="number" id="setTabStaleDays" min="0" step="0.5">
       </label>
-      <label class="settings-field">Close groups idle (days)
+      <label class="settings-field"><span data-i18n="closeGroupsIdle">Close groups idle (days)</span>
         <input type="number" id="setGroupStaleDays" min="0" step="0.5">
       </label>
-      <label class="settings-field">Daily at (overrides interval)
+      <label class="settings-field"><span data-i18n="dailyAt">Daily at (overrides interval)</span>
         <input type="time" id="setSweepTime">
       </label>
     </div>
 
-    <button class="action-btn" data-action="save-settings">Save settings</button>
+    <button class="action-btn" data-action="save-settings" data-i18n="saveSettings">Save settings</button>
   </div>
 
   <div class="commandbar" id="commandBar"></div>
@@ -77,7 +78,7 @@
 
     <div class="section" id="workspacesSection" style="display:none">
       <div class="band">
-        <span class="band-title">Workspaces</span>
+        <span class="band-title" data-i18n="workspacesTitle">Workspaces</span>
         <span class="band-right"><span class="band-count" id="workspacesCount"></span></span>
       </div>
       <div id="workspacesList"></div>
@@ -85,21 +86,21 @@
 
     <div class="section" id="deferredColumn" style="display:none">
       <div class="band">
-        <span class="band-title">Saved for later</span>
+        <span class="band-title" data-i18n="savedForLater">Saved for later</span>
         <span class="band-right"><span class="band-count" id="deferredCount"></span></span>
       </div>
       <div class="deferred-list" id="deferredList"></div>
-      <div class="deferred-empty" id="deferredEmpty" style="display:none">
+      <div class="deferred-empty" id="deferredEmpty" style="display:none" data-i18n="nothingSaved">
         NOTHING SAVED.
       </div>
       <div class="deferred-archive" id="deferredArchive" style="display:none">
         <button class="archive-toggle" id="archiveToggle">
           <svg class="archive-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
-          Archive
+          <span data-i18n="archiveTitle">Archive</span>
           <span class="archive-count" id="archiveCount"></span>
         </button>
         <div class="archive-body" id="archiveBody" style="display:none">
-          <input type="text" class="archive-search" id="archiveSearch" placeholder="Search archived tabs...">
+          <input type="text" class="archive-search" id="archiveSearch" placeholder="Search archived tabs..." data-i18n-placeholder="searchArchived">
           <div class="archive-list" id="archiveList"></div>
         </div>
       </div>
@@ -107,7 +108,7 @@
   </main>
 
   <footer>
-    <span><span id="statTabs">—</span> OPEN TABS</span>
+    <span><span id="statTabs">—</span> <span data-i18n="openTabsSuffix">OPEN TABS</span></span>
     <span><a href="https://github.com/LuSlate/tabsweep" target="_top">TABSWEEP</a></span>
   </footer>
 
@@ -138,6 +139,9 @@
 
 <!-- Cloud AI semantic grouping — only runs on explicit Smart group click -->
 <script src="ai-grouping.js"></script>
+
+<!-- Dashboard language (zh/en) — dictionary + t() + init/toggle -->
+<script src="i18n.js"></script>
 
 <!-- Main dashboard logic — loads last so the DOM is ready -->
 <script src="app.js"></script>
