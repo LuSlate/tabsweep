@@ -460,8 +460,8 @@ function shootConfetti(x, y) {
 /**
  * animateCardOut(card)
  *
- * Smoothly removes a mission card: fade + scale down, then confetti.
- * After the animation, checks if the grid is now empty.
+ * Smoothly removes a group section: fade + scale down, then confetti.
+ * After the animation, checks if the index is now empty.
  */
 function animateCardOut(card) {
   if (!card) return;
