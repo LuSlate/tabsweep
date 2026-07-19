@@ -62,9 +62,9 @@ targets = sweep.partitionSweepTargets(
   [grpMixed1, grpMixed2], { tabStaleMs: DAY, groupStaleMs: 3 * DAY, now: NOW });
 check('partition: one fresh member keeps whole group', targets.length === 0);
 
-// ---- ai-grouping: parseGroupsResponse ----
+// ---- ai-grouping: parseGrouperResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGroupsResponse, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, AI_GROUP_MAX_TABS })');
+  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -73,33 +73,92 @@ const ptabs = [
   { id: 4, url: 'https://x.com/d' },
 ];
 
-let groups = ai.parseGroupsResponse(
+let res = ai.parseGrouperResponse(
   '{"groups":[{"label":"Debug auth","ids":[1,2]},{"label":"News","ids":[3,4]}]}', ptabs);
-check('parse: two valid groups', groups.length === 2);
-check('parse: label kept',       groups[0].label === 'Debug auth');
-check('parse: ids mapped to urls', groups[0].urls.join(',') === 'https://github.com/a,https://stackoverflow.com/b');
+check('parse: two valid groups', res.groups.length === 2);
+check('parse: label kept',       res.groups[0].label === 'Debug auth');
+check('parse: ids mapped to urls', res.groups[0].urls.join(',') === 'https://github.com/a,https://stackoverflow.com/b');
+check('parse: empty dupes/close arrays', res.dupes.length === 0 && res.close.length === 0);
 
-groups = ai.parseGroupsResponse(
+res = ai.parseGrouperResponse(
   '```json\n{"groups":[{"label":"X","ids":[1,99,2]}]}\n```', ptabs);
 check('parse: fenced JSON accepted, hallucinated id dropped',
-  groups.length === 1 && groups[0].urls.length === 2);
+  res.groups.length === 1 && res.groups[0].urls.length === 2);
 
-groups = ai.parseGroupsResponse(
+res = ai.parseGrouperResponse(
   '{"groups":[{"label":"Dup","ids":[1,2]},{"label":"Dup2","ids":[2,3]}]}', ptabs);
 check('parse: id claimed by first group only',
-  groups.length === 1 && groups[0].label === 'Dup');
+  res.groups.length === 1 && res.groups[0].label === 'Dup');
 
-groups = ai.parseGroupsResponse(
+res = ai.parseGrouperResponse(
   '{"groups":[{"label":"Tiny","ids":[1]}]}', ptabs);
-check('parse: sub-2 group dropped', groups.length === 0);
+check('parse: sub-2 group dropped', res.groups.length === 0);
 
-groups = ai.parseGroupsResponse(
+res = ai.parseGrouperResponse(
   '{"groups":[{"label":"Str","ids":["1","2"]}]}', ptabs);
-check('parse: string ids coerced', groups.length === 1);
+check('parse: string ids coerced', res.groups.length === 1);
+
+res = ai.parseGrouperResponse(
+  '{"dupes":[[1,2],[2,3],[4]],"close":[{"id":3,"reason":"done reading"},{"id":99,"reason":"ghost"},{"id":4}]}', ptabs);
+check('parse: dupe id claimed once, sub-2 cluster dropped',
+  res.dupes.length === 1 && res.dupes[0].join(',') === 'https://github.com/a,https://stackoverflow.com/b');
+check('parse: close ghost id dropped, missing reason → empty string',
+  res.close.length === 2 && res.close[0].reason === 'done reading' && res.close[1].reason === '');
+
+const manyTabs = Array.from({ length: 60 }, (_, i) => ({ id: i + 1, url: `https://m.com/${i}` }));
+res = ai.parseGrouperResponse(
+  '{"close":[' + manyTabs.map(t => `{"id":${t.id}}`).join(',') + ']}', manyTabs);
+check('parse: close capped at 50', res.close.length === 50);
 
 let threw = false;
-try { ai.parseGroupsResponse('no json here', ptabs); } catch { threw = true; }
+try { ai.parseGrouperResponse('no json here', ptabs); } catch { threw = true; }
 check('parse: garbage content throws', threw);
+
+// ---- ai-grouping: applyKeepRules ----
+const keepTabs = [
+  { id: 1, url: 'https://a.com/', pinned: true },
+  { id: 2, url: 'https://b.com/' },
+  { id: 3, url: 'https://c.com/' },
+];
+const kr = ai.applyKeepRules({
+  groups: [],
+  dupes: [['https://b.com/', 'https://a.com/', 'https://c.com/']],
+  close: [{ url: 'https://a.com/', reason: 'x' }, { url: 'https://b.com/', reason: 'y' }],
+}, keepTabs);
+check('keep: close filters pinned/active/audible urls',
+  kr.close.length === 1 && kr.close[0].url === 'https://b.com/');
+check('keep: dupe cluster reordered so keep url is first',
+  kr.dupes[0][0] === 'https://a.com/');
+
+// ---- ai-grouping: mergeGroupsIntoCache ----
+let mg = ai.mergeGroupsIntoCache(
+  [{ label: 'Work', urls: ['https://a.com/', 'https://b.com/'] }, { label: 'Fun', urls: ['https://c.com/', 'https://d.com/'] }],
+  [{ label: 'Work', urls: ['https://e.com/'] }, { label: 'New', urls: ['https://f.com/', 'https://g.com/'] }]);
+check('merge: label hit unions urls',
+  mg.find(g => g.label === 'Work').urls.join(',') === 'https://a.com/,https://b.com/,https://e.com/');
+check('merge: new label appended, old untouched',
+  mg.some(g => g.label === 'New') && mg.find(g => g.label === 'Fun').urls.length === 2);
+
+mg = ai.mergeGroupsIntoCache(
+  [{ label: 'A', urls: ['u1', 'u2'] }, { label: 'B', urls: ['u3', 'u4'] }],
+  [{ label: 'B', urls: ['u1'] }]);
+check('merge: fresh claim steals url, shrunk group dropped',
+  mg.length === 1 && mg[0].label === 'B' && mg[0].urls.join(',') === 'u3,u4,u1');
+
+// ---- ai-grouping: buildGrouperPayload ----
+const bp = ai.buildGrouperPayload([
+  { id: 1, title: 't1', url: 'https://a.com/', pinned: true, lastAccessed: 1000 },
+  { id: 2, title: 't2', url: 'https://b.com/', lastAccessed: 1000 },
+], [{ label: 'Old', urls: ['https://b.com/'] }], 1000 + 2 * DAY);
+check('payload: keep flag on pinned only',
+  bp.payload[0].keep === true && bp.payload[1].keep === undefined);
+check('payload: grouped flag from cache urls',
+  bp.payload[1].grouped === true && bp.payload[0].grouped === undefined);
+check('payload: age in whole days', bp.payload[0].age === 2 && bp.payload[1].age === 2);
+check('payload: existing labels listed in prompt', bp.systemPrompt.includes('"Old"'));
+
+const bpFull = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000);
+check('payload: full mode has no labels line', !bpFull.systemPrompt.includes('Reuse an existing label'));
 
 check('trimUrl: hash stripped',
   ai.trimUrlForPrompt('https://a.com/p?q=1#frag') === 'https://a.com/p?q=1');
