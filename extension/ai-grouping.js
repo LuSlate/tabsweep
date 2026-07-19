@@ -100,11 +100,36 @@ async function callCloudGrouper(tabs, settings) {
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 120)}`);
   const data = await res.json();
-  const content = api.format === 'anthropic'
-    ? (data.content && data.content[0] && data.content[0].text)
-    : (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content);
-  if (!content) throw new Error('Empty API response');
+  const content = extractResponseText(api.format, data);
+  if (!content) {
+    const reason = api.format === 'anthropic'
+      ? data.stop_reason
+      : data.choices && data.choices[0] && data.choices[0].finish_reason;
+    throw new Error(`Empty API response${reason ? ` (stop: ${reason})` : ''}`);
+  }
   return parseGroupsResponse(content, sorted);
+}
+
+/**
+ * extractResponseText(format, data) → string
+ *
+ * Pulls the model's text out of a chat response in either wire format.
+ * Anthropic `content` is a block array that may lead with non-text blocks
+ * (thinking models emit {type:'thinking'} first) — collect every text
+ * block, don't assume content[0]. A plain-string `content` (some proxies)
+ * is used as-is. OpenAI reads choices[0].message.content.
+ */
+function extractResponseText(format, data) {
+  if (format === 'anthropic') {
+    if (data && typeof data.content === 'string') return data.content;
+    const blocks = data && Array.isArray(data.content) ? data.content : [];
+    return blocks
+      .filter(b => b && b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text)
+      .join('\n');
+  }
+  const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+  return (msg && msg.content) || '';
 }
 
 /**

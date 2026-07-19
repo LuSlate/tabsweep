@@ -64,7 +64,7 @@ check('partition: one fresh member keeps whole group', targets.length === 0);
 
 // ---- ai-grouping: parseGroupsResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGroupsResponse, trimUrlForPrompt, resolveApiEndpoints, AI_GROUP_MAX_TABS })');
+  '({ parseGroupsResponse, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -105,6 +105,24 @@ check('trimUrl: hash stripped',
   ai.trimUrlForPrompt('https://a.com/p?q=1#frag') === 'https://a.com/p?q=1');
 check('trimUrl: long query truncated to 60 chars',
   ai.trimUrlForPrompt('https://a.com/p?' + 'x'.repeat(200)).length <= 'https://a.com/p?'.length + 61);
+
+// ---- ai-grouping: extractResponseText ----
+check('extract: anthropic text block',
+  ai.extractResponseText('anthropic', { content: [{ type: 'text', text: '{"groups":[]}' }] }) === '{"groups":[]}');
+check('extract: thinking blocks skipped, all text blocks joined',
+  ai.extractResponseText('anthropic', { content: [
+    { type: 'thinking', thinking: 'hmm' },
+    { type: 'text', text: 'a' },
+    { type: 'text', text: 'b' },
+  ] }) === 'a\nb');
+check('extract: string content tolerated (proxies)',
+  ai.extractResponseText('anthropic', { content: 'plain' }) === 'plain');
+check('extract: openai choice content',
+  ai.extractResponseText('openai', { choices: [{ message: { content: 'x' } }] }) === 'x');
+check('extract: empty/malformed → empty string',
+  ai.extractResponseText('anthropic', { content: [] }) === ''
+  && ai.extractResponseText('anthropic', {}) === ''
+  && ai.extractResponseText('openai', {}) === '');
 
 const apiEq = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
 check('api: openai chat url passes through, sibling /models',
