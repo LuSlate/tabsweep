@@ -2,9 +2,9 @@
  * ai-grouping.js — Cloud AI semantic grouping (DOM-free)
  *
  * Sends the open tab list to a user-configured OpenAI-compatible
- * chat-completions endpoint and parses back task/topic clusters.
- * Loaded by the dashboard only (<script> in index.html) — the
- * background auto-grouping stays domain-based and never calls this.
+ * chat-completions endpoint and parses back groups, duplicates, and close suggestions.
+ * Dual-loaded: the dashboard (Smart-group button) and the service worker (aiAuto alarm)
+ * both import this module; runAiTick is the shared entry point.
  *
  * Privacy: titles + URLs leave the machine ONLY when the user presses
  * "Smart group" with a configured API key. With no key, nothing here
@@ -13,14 +13,24 @@
 
 const AI_GROUP_MAX_TABS = 200; // token guard; overflow falls to domain cards
 
-const GROUPER_SYSTEM_PROMPT = `You cluster browser tabs into task or topic groups.
-Rules:
-- Only group tabs that clearly belong to the same task or topic.
-- Every group must contain at least 2 tab ids.
-- A tab id may appear in at most one group.
-- Omit tabs that do not clearly belong anywhere.
-- Give each group a short label (2-5 words) in the dominant language of its tab titles.
-- Respond with JSON only, no prose: {"groups":[{"label":"...","ids":[1,2]}]}`;
+const GROUPER_SYSTEM_PROMPT = `You organize browser tabs. Respond with JSON only, no prose:
+{"groups":[{"label":"...","ids":[1,2]}],"dupes":[[3,4]],"close":[{"id":5,"reason":"..."}]}
+
+groups — cluster tabs whose entry lacks "grouped":true into task/topic groups:
+- Every group has at least 2 ids. An id appears in at most one group.
+- Omit tabs that fit nowhere. Never include ids flagged "grouped":true.
+- Label: 2-5 words in the dominant language of the group's tab titles.
+{EXISTING_LABELS}
+dupes — clusters of at least 2 ids showing the same content at different URLs
+(mirrors, reposts, a search page vs its result page):
+- First id in each cluster = the copy to keep. An id appears in at most one cluster.
+
+close — tabs worth closing (finished reading, expired events, outdated searches,
+superseded pages):
+- Never suggest ids flagged "keep":true.
+- Use "age" (days since last view) as a signal, not a rule.
+- "reason": at most 8 words, user-facing, in the tab title's language.
+- At most 20 suggestions; empty array when nothing is clearly closable.`;
 
 /**
  * trimUrlForPrompt(url)
@@ -38,16 +48,52 @@ function trimUrlForPrompt(url) {
 }
 
 /**
- * callCloudGrouper(tabs, { endpoint, apiKey, model })
- *   → Promise<Array<{ label: string, urls: string[] }>>
+ * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
+ *   → { payload, systemPrompt }
  *
- * tabs: real web tabs [{ id, url, title, lastAccessed, ... }].
- * Supports both wire formats — OpenAI chat/completions and Anthropic
- * messages — picked by resolveApiEndpoints(settings.endpoint).
- * Throws on HTTP error, empty response, or unparseable content — the
- * caller toasts and leaves the current grouping untouched.
+ * Builds the per-tab JSON payload and the mode-dependent system prompt.
+ * Entry flags: grouped (url already in a cached group — model must not
+ * re-group it), keep (pinned/audible/active — never suggest closing),
+ * age (whole days since lastAccessed — staleness signal for close).
+ * cachedGroups non-empty → incremental mode: existing labels are listed
+ * in the prompt so the model reuses them.
  */
-async function callCloudGrouper(tabs, settings) {
+function buildGrouperPayload(tabs, cachedGroups, now = Date.now()) {
+  const groupedUrls = new Set();
+  const labels = [];
+  for (const g of cachedGroups || []) {
+    if (g && typeof g.label === 'string' && g.label) labels.push(g.label);
+    for (const u of (g && g.urls) || []) groupedUrls.add(u);
+  }
+  const payload = tabs.map(t => {
+    const entry = {
+      id: t.id,
+      title: (t.title || '').slice(0, 80),
+      url: trimUrlForPrompt(t.url),
+    };
+    if (groupedUrls.has(t.url)) entry.grouped = true;
+    if (t.pinned || t.audible || t.active) entry.keep = true;
+    if (t.lastAccessed) entry.age = Math.max(0, Math.round((now - t.lastAccessed) / 86400000));
+    return entry;
+  });
+  const systemPrompt = GROUPER_SYSTEM_PROMPT.replace('{EXISTING_LABELS}',
+    labels.length > 0
+      ? `- Reuse an existing label when a tab fits it: ${labels.map(l => JSON.stringify(l)).join(', ')}. Create new labels sparingly.\n`
+      : '');
+  return { payload, systemPrompt };
+}
+
+/**
+ * callCloudGrouper(tabs, settings, cachedGroups = [])
+ *   → Promise<{ groups: [{label, urls}], dupes: [[urls]], close: [{url, reason}] }>
+ *
+ * One model call, three products: (incremental) groups, semantic dupes,
+ * close suggestions — all URL-keyed. cachedGroups non-empty runs
+ * incremental mode (only ungrouped tabs get (re)assigned, existing
+ * labels reusable). Throws on HTTP error, empty response, or
+ * unparseable content — the caller decides how to report it.
+ */
+async function callCloudGrouper(tabs, settings, cachedGroups = []) {
   // Cap the payload; when over the cap keep the most recently used tabs
   const sorted = [...tabs]
     .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
@@ -55,11 +101,8 @@ async function callCloudGrouper(tabs, settings) {
 
   const api = resolveApiEndpoints(settings.endpoint);
   if (!api) throw new Error('Set an endpoint in ⚙ Settings first');
-  const payload = JSON.stringify(sorted.map(t => ({
-    id: t.id,
-    title: (t.title || '').slice(0, 80),
-    url: trimUrlForPrompt(t.url),
-  })));
+  const { payload, systemPrompt } = buildGrouperPayload(sorted, cachedGroups);
+  const body = JSON.stringify(payload);
 
   const request = api.format === 'anthropic'
     ? {
@@ -74,8 +117,8 @@ async function callCloudGrouper(tabs, settings) {
           model: settings.model,
           max_tokens: 4096,
           temperature: 0,
-          system: GROUPER_SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: payload }],
+          system: systemPrompt,
+          messages: [{ role: 'user', content: body }],
         },
       }
     : {
@@ -87,8 +130,8 @@ async function callCloudGrouper(tabs, settings) {
           model: settings.model,
           temperature: 0,
           messages: [
-            { role: 'system', content: GROUPER_SYSTEM_PROMPT },
-            { role: 'user', content: payload },
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: body },
           ],
         },
       };
@@ -107,7 +150,7 @@ async function callCloudGrouper(tabs, settings) {
       : data.choices && data.choices[0] && data.choices[0].finish_reason;
     throw new Error(`Empty API response${reason ? ` (stop: ${reason})` : ''}`);
   }
-  return parseGroupsResponse(content, sorted);
+  return applyKeepRules(parseGrouperResponse(content, sorted), sorted);
 }
 
 /**
@@ -133,15 +176,17 @@ function extractResponseText(format, data) {
 }
 
 /**
- * parseGroupsResponse(content, tabs)
- *   → Array<{ label, urls }> — the cache shape (URL-keyed, restart-safe)
+ * parseGrouperResponse(content, tabs)
+ *   → { groups: [{label, urls}], dupes: [[urls]], close: [{url, reason}] }
  *
- * Defensive by contract: drops groups with bad shape, ids that don't
- * exist in `tabs`, duplicate ids across groups (first group wins), and
- * groups that shrink below 2 urls after filtering. Throws when no JSON
- * object can be extracted at all.
+ * Defensive by contract. groups: drops bad shapes, unknown/duplicate ids
+ * (first group wins), groups below 2 urls. dupes: clusters below 2 urls
+ * dropped, an id belongs to at most one cluster (clusters are URL arrays;
+ * first url = the copy to keep). close: unknown ids dropped, reason
+ * trimmed to 120 chars, hard cap 50 entries. Throws when no JSON object
+ * can be extracted at all.
  */
-function parseGroupsResponse(content, tabs) {
+function parseGrouperResponse(content, tabs) {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
   const match = text.match(/\{[\s\S]*\}/); // tolerate ```json fences
   if (!match) throw new Error('No JSON in model response');
@@ -150,6 +195,8 @@ function parseGroupsResponse(content, tabs) {
   catch { throw new Error('Invalid JSON in model response'); }
 
   const urlById = new Map(tabs.map(t => [t.id, t.url]));
+  const coerceId = raw => typeof raw === 'string' ? parseInt(raw, 10) : raw;
+
   const claimed = new Set();
   const groups = [];
   const rawGroups = parsed && Array.isArray(parsed.groups) ? parsed.groups : [];
@@ -157,7 +204,7 @@ function parseGroupsResponse(content, tabs) {
     if (!g || typeof g.label !== 'string' || !Array.isArray(g.ids)) continue;
     const urls = [];
     for (const rawId of g.ids) {
-      const id = typeof rawId === 'string' ? parseInt(rawId, 10) : rawId;
+      const id = coerceId(rawId);
       if (!urlById.has(id) || claimed.has(id)) continue;
       claimed.add(id);
       urls.push(urlById.get(id));
@@ -166,7 +213,82 @@ function parseGroupsResponse(content, tabs) {
       groups.push({ label: g.label.trim().slice(0, 60) || 'Task', urls });
     }
   }
-  return groups;
+
+  const dupeClaimed = new Set();
+  const dupes = [];
+  const rawDupes = parsed && Array.isArray(parsed.dupes) ? parsed.dupes : [];
+  for (const cluster of rawDupes) {
+    if (!Array.isArray(cluster)) continue;
+    const urls = [];
+    for (const rawId of cluster) {
+      const id = coerceId(rawId);
+      if (!urlById.has(id) || dupeClaimed.has(id)) continue;
+      dupeClaimed.add(id);
+      urls.push(urlById.get(id));
+    }
+    if (urls.length >= 2) dupes.push(urls);
+  }
+
+  const closeClaimed = new Set();
+  const close = [];
+  const rawClose = parsed && Array.isArray(parsed.close) ? parsed.close : [];
+  for (const c of rawClose) {
+    if (close.length >= 50) break;
+    if (!c) continue;
+    const id = coerceId(c.id);
+    if (!urlById.has(id) || closeClaimed.has(id)) continue;
+    closeClaimed.add(id);
+    close.push({ url: urlById.get(id), reason: String(c.reason || '').trim().slice(0, 120) });
+  }
+
+  return { groups, dupes, close };
+}
+
+/**
+ * applyKeepRules(result, tabs) → same shape as parseGrouperResponse
+ *
+ * The model is TOLD not to close pinned/audible/active tabs — this is
+ * the belt-and-suspenders enforcement: filter them out of close, and
+ * when a dupe cluster contains a keep-tab, move its url to the front
+ * (the kept copy) so the safe one survives.
+ */
+function applyKeepRules(result, tabs) {
+  const keepUrls = new Set(
+    tabs.filter(t => t.pinned || t.audible || t.active).map(t => t.url));
+  const close = result.close.filter(c => !keepUrls.has(c.url));
+  const dupes = result.dupes.map(cluster => {
+    const idx = cluster.findIndex(u => keepUrls.has(u));
+    if (idx <= 0) return cluster;
+    const reordered = [...cluster];
+    const [u] = reordered.splice(idx, 1);
+    reordered.unshift(u);
+    return reordered;
+  });
+  return { groups: result.groups, dupes, close };
+}
+
+/**
+ * mergeGroupsIntoCache(cachedGroups, freshGroups) → groups array
+ *
+ * Incremental merge: fresh groups claiming a url steal it from any
+ * cached group; a fresh group whose label matches a cached one unions
+ * urls (cached order first); new labels append. Groups below 2 urls
+ * after the merge are dropped (they dissolve back to domain rows).
+ */
+function mergeGroupsIntoCache(cachedGroups, freshGroups) {
+  const merged = (cachedGroups || []).map(g => ({ label: g.label, urls: [...(g.urls || [])] }));
+  const freshClaims = new Set();
+  for (const g of freshGroups || []) for (const u of g.urls || []) freshClaims.add(u);
+  for (const g of merged) g.urls = g.urls.filter(u => !freshClaims.has(u));
+  for (const fresh of freshGroups || []) {
+    const hit = merged.find(g => g.label === fresh.label);
+    if (hit) {
+      for (const u of fresh.urls || []) if (!hit.urls.includes(u)) hit.urls.push(u);
+    } else {
+      merged.push({ label: fresh.label, urls: [...(fresh.urls || [])] });
+    }
+  }
+  return merged.filter(g => g.urls.length >= 2);
 }
 
 /**
@@ -272,4 +394,48 @@ async function probeChatEndpoint(settings) {
   if (res.status === 401 || res.status === 403) throw new Error('API key rejected (401/403)');
   if (res.status === 404) throw new Error('Endpoint not found (404) — check the URL');
   throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 120)}`);
+}
+
+/**
+ * runAiTick(settings, { force } = {})
+ *   → Promise<{ groups, dupes, close } | null>
+ *
+ * The whole AI tick, shared by the dashboard Smart-group button
+ * (force: true) and the background aiAuto alarm. Queries tabs itself,
+ * skips quietly (null) when the sorted-URL signature is unchanged since
+ * the last tick — idle browsers don't burn tokens. Throws on missing
+ * apiKey or API failure; the background caller catches and warns.
+ *
+ * Storage written per successful tick:
+ *   aiGroupCache       { groups, dupes, ts }   — merged incremental groups
+ *   aiSweepSuggestions { items, ts }           — close suggestions (replaced)
+ *   lastAiSig          string                  — change detection
+ *   lastAiTick         { at, groups, dupes, close } — dashboard toast
+ */
+async function runAiTick(settings, { force = false } = {}) {
+  if (!settings || !settings.apiKey) throw new Error('Set an API key in ⚙ Settings first');
+
+  const all = await chrome.tabs.query({});
+  const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
+
+  const sig = tabs.map(t => t.url).sort().join('\n');
+  if (!force) {
+    const { lastAiSig } = await chrome.storage.local.get('lastAiSig');
+    if (lastAiSig === sig) return null;
+  }
+
+  const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+  const cachedGroups = aiGroupCache && Array.isArray(aiGroupCache.groups) ? aiGroupCache.groups : [];
+  const result = await callCloudGrouper(tabs, settings, cachedGroups);
+  const merged = mergeGroupsIntoCache(cachedGroups, result.groups);
+  const dupeExtras = result.dupes.reduce((n, c) => n + c.length - 1, 0);
+  const now = Date.now();
+
+  await chrome.storage.local.set({
+    aiGroupCache: { groups: merged, dupes: result.dupes, ts: now },
+    aiSweepSuggestions: { items: result.close, ts: now },
+    lastAiSig: sig,
+    lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
+  });
+  return { groups: merged, dupes: result.dupes, close: result.close };
 }

@@ -496,7 +496,7 @@ const AI_GROUPING_DEFAULTS = {
   endpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
   model: 'gpt-4o-mini',
-  auto: false,   // reserved for phase 2 (auto re-group on tab-set change)
+  auto: false,   // background aiAuto alarm every 30 min (background.js) when enabled
 };
 
 async function getAiGroupingSettings() {
@@ -514,6 +514,7 @@ async function populateSettingsPanel() {
   document.getElementById('setAiEndpoint').value       = ai.endpoint;
   document.getElementById('setAiKey').value            = ai.apiKey;
   document.getElementById('setAiModel').value          = ai.model;
+  document.getElementById('setAiAuto').checked         = ai.auto === true;
   document.getElementById('setAutoCloseEnabled').checked = ac.enabled;
   document.getElementById('setIntervalMin').value      = ac.intervalMin;
   document.getElementById('setTabStaleDays').value     = ac.tabStaleDays;
@@ -878,12 +879,12 @@ async function renderWorkspaces() {
    ---------------------------------------------------------------- */
 
 /**
- * renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn })
+ * renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN, autoGroupOn })
  *
  * The single row of commands under the top bar. Contextual commands
  * (sweep stale, close extra dashboards) appear only when relevant.
  */
-function renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn }) {
+function renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN, autoGroupOn }) {
   const bar = document.getElementById('commandBar');
   if (!bar) return;
   let html = '';
@@ -892,6 +893,9 @@ function renderCommandBar({ staleN, dashDupeN, totalN, autoGroupOn }) {
   }
   if (dashDupeN > 1) {
     html += `<button class="cmd" data-action="close-dashboard-dupes">&gt; Close ${dashDupeN - 1} extra dashboard${dashDupeN - 1 !== 1 ? 's' : ''}</button>`;
+  }
+  if (aiDupeN > 0) {
+    html += `<button class="cmd" data-action="close-ai-dupes">&gt; Close ${aiDupeN} AI dupe${aiDupeN !== 1 ? 's' : ''}</button>`;
   }
   html += `<button class="cmd" data-action="smart-group">&gt; Smart group</button>
     <button class="cmd" data-action="group-in-chrome">&gt; Group in Chrome</button>
@@ -1009,6 +1013,55 @@ function renderGroupSection(group, startNum) {
   </section>`;
 
   return { html, emitted: num - startNum };
+}
+
+/**
+ * renderAiSweepSection(items, realTabs, startNum)
+ *   → { html: string, emitted: number }
+ *
+ * The AI-sweep review band: one checkbox row per close suggestion that
+ * still maps to a live tab (first free tab per url wins). Rows do NOT
+ * navigate — clicking toggles the checkbox (checked = will close).
+ * Numbers chain into the global row numbering via startNum, same
+ * contract as renderGroupSection. All model text goes through escapeHtml.
+ */
+function renderAiSweepSection(items, realTabs, startNum) {
+  const idsByUrl = new Map();
+  for (const t of realTabs) {
+    if (!idsByUrl.has(t.url)) idsByUrl.set(t.url, []);
+    idsByUrl.get(t.url).push(t);
+  }
+  const used = new Set();
+  const rows = [];
+  let num = startNum;
+  for (const item of items || []) {
+    const tab = (idsByUrl.get(item.url) || []).find(t => !used.has(t.id));
+    if (!tab) continue;
+    used.add(tab.id);
+    num++;
+    const safeUrl = String(item.url).replace(/"/g, '&quot;');
+    const reason = item.reason ? ` <span class="sweep-reason">${escapeHtml(item.reason)}</span>` : '';
+    rows.push(`<div class="trow sweep-row" data-action="ai-sweep-toggle">
+      <span class="tnum">${String(num).padStart(3, '0')}</span>
+      <input type="checkbox" class="sweep-checkbox" data-tab-url="${safeUrl}" checked>
+      <span class="chip-text">${escapeHtml(tab.title || item.title || item.url)}</span>${reason}
+    </div>`);
+  }
+  if (rows.length === 0) return { html: '', emitted: 0 };
+  const html = `<section class="group" id="aiSweepSection">
+    <div class="band">
+      <span class="band-title">AI sweep · ${rows.length}</span>
+      <span class="band-right">
+        <span class="band-actions">
+          <button class="cmd" data-action="ai-sweep-confirm">Close selected</button>
+          <button class="cmd" data-action="ai-sweep-dismiss">Dismiss</button>
+        </span>
+        <span class="band-count">${rows.length}</span>
+      </span>
+    </div>
+    <div class="grows">${rows.join('')}</div>
+  </section>`;
+  return { html, emitted: rows.length };
 }
 
 
@@ -1238,11 +1291,13 @@ async function renderStaticDashboard() {
     return b.tabs.length - a.tabs.length;
   });
 
-  // --- Render domain groups ---
+  // --- Render AI sweep band + domain groups (sweep band takes the first numbers) ---
+  const { aiSweepSuggestions } = await chrome.storage.local.get('aiSweepSuggestions');
   const groupsEl = document.getElementById('openTabsGroups');
   if (groupsEl && domainGroups.length > 0) {
-    let startNum = 0;
-    groupsEl.innerHTML = domainGroups.map(g => {
+    const sweep = renderAiSweepSection(aiSweepSuggestions && aiSweepSuggestions.items, realTabs, 0);
+    let startNum = sweep.emitted;
+    groupsEl.innerHTML = sweep.html + domainGroups.map(g => {
       const r = renderGroupSection(g, startNum);
       startNum += r.emitted;
       return r.html;
@@ -1254,7 +1309,10 @@ async function renderStaticDashboard() {
   // --- Command bar ---
   const staleN   = realTabs.filter(t => isStaleTab(t, currentStaleMs)).length;
   const dashDupeN = openTabs.filter(t => t.isDashboard).length;
-  renderCommandBar({ staleN, dashDupeN, totalN: realTabs.length, autoGroupOn });
+  const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+  const aiDupeN = mapCachedDupesToTabs(realTabs, aiGroupCache && aiGroupCache.dupes)
+    .reduce((n, c) => n + c.extraIds.length, 0);
+  renderCommandBar({ staleN, dashDupeN, aiDupeN, totalN: realTabs.length, autoGroupOn });
 
   // --- Footer stats ---
   const statTabs = document.getElementById('statTabs');
@@ -1265,6 +1323,13 @@ async function renderStaticDashboard() {
   if (lastSweep && lastSweep.at && lastSweep.at !== lastSweepSeen) {
     showToast(`Auto-swept ${lastSweep.count} stale tab${lastSweep.count !== 1 ? 's' : ''} — saved to archive`);
     await chrome.storage.local.set({ lastSweepSeen: lastSweep.at });
+  }
+
+  // --- AI tick notice (written by runAiTick; shown once) ---
+  const { lastAiTick, lastAiTickSeen } = await chrome.storage.local.get(['lastAiTick', 'lastAiTickSeen']);
+  if (lastAiTick && lastAiTick.at && lastAiTick.at !== lastAiTickSeen) {
+    showToast(`AI: ${lastAiTick.groups} groups · ${lastAiTick.dupes} dupes · ${lastAiTick.close} close suggestions`);
+    await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
   }
 
   // --- Render "Saved for Later" column ---
@@ -1374,7 +1439,7 @@ document.addEventListener('click', async (e) => {
         endpoint: document.getElementById('setAiEndpoint').value.trim() || AI_GROUPING_DEFAULTS.endpoint,
         apiKey:   document.getElementById('setAiKey').value.trim(),
         model:    document.getElementById('setAiModel').value.trim() || AI_GROUPING_DEFAULTS.model,
-        auto:     false,
+        auto:     document.getElementById('setAiAuto').checked,
       },
       autoClose: {
         enabled:        document.getElementById('setAutoCloseEnabled').checked,
@@ -1391,7 +1456,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // ---- Smart group: cloud AI semantic grouping ----
+  // ---- Smart group: one AI tick — groups + dupes + close suggestions ----
   if (action === 'smart-group') {
     const settings = await getAiGroupingSettings();
     if (!settings.apiKey) {
@@ -1401,14 +1466,40 @@ document.addEventListener('click', async (e) => {
     actionEl.disabled = true;
     actionEl.textContent = '⏳ Grouping…';
     try {
-      const groups = await callCloudGrouper(getRealTabs(), settings);
-      await chrome.storage.local.set({ aiGroupCache: { groups } });
-      showToast(`Smart grouped into ${groups.length} task${groups.length !== 1 ? 's' : ''}`);
+      const result = await runAiTick(settings, { force: true });
+      const dupeN = result.dupes.reduce((n, c) => n + c.length - 1, 0);
+      showToast(`AI: ${result.groups.length} groups · ${dupeN} dupes · ${result.close.length} close suggestions`);
+      // We just toasted the outcome — don't let the tick notice repeat it
+      const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
+      if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
     } catch (err) {
       console.error('[tabsweep] smart group failed:', err);
       showToast(`Smart group failed: ${err.message}`);
     }
-    await renderStaticDashboard(); // re-creates the button; shows AI task cards
+    await renderStaticDashboard();
+    return;
+  }
+
+  // ---- Re-group all: clear the cache, full (non-incremental) tick ----
+  if (action === 'regroup-all') {
+    const settings = await getAiGroupingSettings();
+    if (!settings.apiKey) {
+      showToast('Set an API key in ⚙ Settings first');
+      return;
+    }
+    actionEl.disabled = true;
+    actionEl.textContent = '⏳ Re-grouping…';
+    try {
+      await chrome.storage.local.remove('aiGroupCache');
+      const result = await runAiTick(settings, { force: true });
+      showToast(`Re-grouped into ${result.groups.length} tasks`);
+      const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
+      if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
+    } catch (err) {
+      console.error('[tabsweep] re-group failed:', err);
+      showToast(`Re-group failed: ${err.message}`);
+    }
+    await renderStaticDashboard();
     return;
   }
 
@@ -1661,6 +1752,63 @@ document.addEventListener('click', async (e) => {
     }
 
     showToast('Closed duplicates, kept one copy each');
+    return;
+  }
+
+  // ---- Close AI-detected duplicates, keep the first of each cluster ----
+  if (action === 'close-ai-dupes') {
+    const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+    const clusters = mapCachedDupesToTabs(getRealTabs(), aiGroupCache && aiGroupCache.dupes);
+    const extraIds = clusters.flatMap(c => c.extraIds);
+    const byId = new Map(openTabs.map(t => [t.id, t]));
+    const targets = extraIds.map(id => byId.get(id)).filter(Boolean);
+    if (targets.length === 0) return;
+    await archiveAndClose(targets);
+    await fetchOpenTabs();
+    playCloseSound();
+    showToast(`Closed ${targets.length} AI dupe${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    renderStaticDashboard();
+    return;
+  }
+
+  // ---- AI sweep row: toggle its checkbox (row click never navigates) ----
+  if (action === 'ai-sweep-toggle') {
+    if (e.target.classList && e.target.classList.contains('sweep-checkbox')) return; // native toggle
+    const box = actionEl.querySelector('.sweep-checkbox');
+    if (box) box.checked = !box.checked;
+    return;
+  }
+
+  // ---- AI sweep: archive-and-close the checked suggestions ----
+  if (action === 'ai-sweep-confirm') {
+    const section = actionEl.closest('#aiSweepSection');
+    if (!section) return;
+    const urls = [...section.querySelectorAll('.sweep-checkbox:checked')]
+      .map(b => b.dataset.tabUrl);
+    if (urls.length === 0) { showToast('Nothing selected'); return; }
+    const urlSet = new Set(urls);
+    const targets = getRealTabs().filter(t => urlSet.has(t.url));
+    await archiveAndClose(targets);
+    // Prune closed urls; drop the key when nothing remains
+    const { aiSweepSuggestions } = await chrome.storage.local.get('aiSweepSuggestions');
+    const remaining = ((aiSweepSuggestions && aiSweepSuggestions.items) || [])
+      .filter(it => !urlSet.has(it.url));
+    if (remaining.length > 0) {
+      await chrome.storage.local.set({ aiSweepSuggestions: { items: remaining, ts: Date.now() } });
+    } else {
+      await chrome.storage.local.remove('aiSweepSuggestions');
+    }
+    await fetchOpenTabs();
+    playCloseSound();
+    showToast(`Closed ${targets.length} tab${targets.length !== 1 ? 's' : ''} — saved to archive`);
+    renderStaticDashboard();
+    return;
+  }
+
+  // ---- AI sweep: discard all suggestions ----
+  if (action === 'ai-sweep-dismiss') {
+    await chrome.storage.local.remove('aiSweepSuggestions');
+    renderStaticDashboard();
     return;
   }
 

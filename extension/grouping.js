@@ -273,6 +273,39 @@ function mapCachedGroupsToTabs(tabs, cachedGroups) {
 }
 
 /**
+ * mapCachedDupesToTabs(tabs, cachedDupes)
+ *   → Array<{ keepId: number, extraIds: number[] }>
+ *
+ * Maps URL-keyed AI dupe clusters onto live tabs. Each cached url claims
+ * one live tab with that url (duplicate urls claim distinct tabs), same
+ * as mapCachedGroupsToTabs. The first url's tab is the copy to keep
+ * (applyKeepRules already moved pinned/active/audible to the front);
+ * the rest are closable extras. A cluster that shrinks below 2 live
+ * tabs dissolves. Pure — node-testable.
+ */
+function mapCachedDupesToTabs(tabs, cachedDupes) {
+  const idsByUrl = new Map();
+  for (const t of tabs) {
+    if (t.id == null) continue;
+    if (!idsByUrl.has(t.url)) idsByUrl.set(t.url, []);
+    idsByUrl.get(t.url).push(t.id);
+  }
+  const used = new Set();
+  const result = [];
+  for (const cluster of cachedDupes || []) {
+    const ids = [];
+    for (const url of cluster || []) {
+      const free = (idsByUrl.get(url) || []).find(id => !used.has(id));
+      if (free == null) continue;
+      used.add(free);
+      ids.push(free);
+    }
+    if (ids.length >= 2) result.push({ keepId: ids[0], extraIds: ids.slice(1) });
+  }
+  return result;
+}
+
+/**
  * openerChainClusters(tabs)
  *
  * Union-find over openerTabId edges. A cluster is a task only when it
