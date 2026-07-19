@@ -396,14 +396,10 @@ function playCloseSound() {
  */
 function shootConfetti(x, y) {
   const colors = [
-    '#c8713a', // amber
-    '#e8a070', // amber light
-    '#5a7a62', // sage
-    '#8aaa92', // sage light
-    '#5a6b7a', // slate
-    '#8a9baa', // slate light
-    '#d4b896', // warm paper
-    '#b35a5a', // rose
+    '#000000',
+    '#666666',
+    '#0000ee',
+    '#bbbbbb',
   ];
 
   const particleCount = 17;
@@ -544,8 +540,8 @@ function checkAndShowEmptyState() {
           <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
         </svg>
       </div>
-      <div class="empty-title">Inbox zero, but for tabs.</div>
-      <div class="empty-subtitle">You're free.</div>
+      <div class="empty-title">All clear</div>
+      <div class="empty-subtitle">No open tabs</div>
     </div>
   `;
 
@@ -925,7 +921,6 @@ function renderWorkspaceCard(ws) {
 
   return `
     <div class="mission-card domain-card has-neutral-bar" data-workspace-id="${ws.id}">
-      <div class="status-bar"></div>
       <div class="mission-content">
         <div class="mission-top">
           <span class="mission-name">${escapeHtml(ws.name)}</span>
@@ -936,10 +931,6 @@ function renderWorkspaceCard(ws) {
           <button class="action-btn" data-action="restore-workspace" data-workspace-id="${ws.id}">Restore all</button>
           <button class="action-btn close-tabs" data-action="delete-workspace" data-workspace-id="${ws.id}">Delete</button>
         </div>
-      </div>
-      <div class="mission-meta">
-        <div class="mission-page-count">${ws.tabs.length}</div>
-        <div class="mission-page-label">tabs</div>
       </div>
     </div>`;
 }
@@ -1045,7 +1036,7 @@ function renderDomainCard(group) {
   </span>`;
 
   const dupeBadge = hasDupes
-    ? `<span class="open-tabs-badge" style="color:var(--accent-amber);background:rgba(200,113,58,0.08);">
+    ? `<span class="open-tabs-badge dupe">
         ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}
       </span>`
     : '';
@@ -1111,7 +1102,6 @@ function renderDomainCard(group) {
 
   return `
     <div class="mission-card domain-card ${hasDupes ? 'has-amber-bar' : 'has-neutral-bar'}" data-domain-id="${stableId}">
-      <div class="status-bar"></div>
       <div class="mission-content">
         <div class="mission-top">
           <span class="mission-name">${escapeHtml(cardTitle)}</span>
@@ -1120,10 +1110,6 @@ function renderDomainCard(group) {
         </div>
         <div class="mission-pages">${pageChips}</div>
         <div class="actions">${actionsHtml}</div>
-      </div>
-      <div class="mission-meta">
-        <div class="mission-page-count">${tabCount}</div>
-        <div class="mission-page-label">tabs</div>
       </div>
     </div>`;
 }
@@ -1363,7 +1349,7 @@ async function renderStaticDashboard() {
 
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
-    openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn" data-action="smart-group" style="font-size:11px;padding:3px 10px;">✨ Smart group</button> <button class="action-btn" data-action="group-in-chrome" style="font-size:11px;padding:3px 10px;">Group in Chrome</button> <label class="action-btn" style="font-size:11px;padding:3px 10px;cursor:pointer;"><input type="checkbox" data-action="toggle-auto-group" ${autoGroupOn ? 'checked' : ''} style="vertical-align:-2px;margin-right:4px;">Auto</label> <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn sm" data-action="smart-group">Smart group</button> <button class="action-btn sm" data-action="group-in-chrome">Group in Chrome</button> <label class="action-btn sm auto-toggle"><input type="checkbox" data-action="toggle-auto-group" ${autoGroupOn ? 'checked' : ''}>Auto</label> <button class="action-btn sm close-tabs" data-action="close-all-open-tabs">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
     openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
@@ -1418,9 +1404,9 @@ document.addEventListener('click', async (e) => {
     playCloseSound();
     const banner = document.getElementById('dashboardDupeBanner');
     if (banner) {
-      banner.style.transition = 'opacity 0.4s';
+      banner.style.transition = 'opacity 0.15s linear';
       banner.style.opacity = '0';
-      setTimeout(() => { banner.style.display = 'none'; banner.style.opacity = '1'; }, 400);
+      setTimeout(() => { banner.style.display = 'none'; banner.style.opacity = '1'; }, 150);
     }
     showToast('Closed extra dashboard tabs');
     return;
@@ -1566,7 +1552,7 @@ document.addEventListener('click', async (e) => {
     if (chip) {
       const rect = chip.getBoundingClientRect();
       shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      chip.style.transition = 'opacity 0.2s, transform 0.2s';
+      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
       chip.style.opacity    = '0';
       chip.style.transform  = 'scale(0.8)';
       setTimeout(() => {
@@ -1615,7 +1601,7 @@ document.addEventListener('click', async (e) => {
     // Animate chip out
     const chip = actionEl.closest('.page-chip');
     if (chip) {
-      chip.style.transition = 'opacity 0.2s, transform 0.2s';
+      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
       chip.style.opacity    = '0';
       chip.style.transform  = 'scale(0.8)';
       setTimeout(() => chip.remove(), 200);
@@ -1755,20 +1741,20 @@ document.addEventListener('click', async (e) => {
     playCloseSound();
 
     // Hide the dedup button
-    actionEl.style.transition = 'opacity 0.2s';
+    actionEl.style.transition = 'opacity 0.2s linear';
     actionEl.style.opacity    = '0';
     setTimeout(() => actionEl.remove(), 200);
 
     // Remove dupe badges from the card
     if (card) {
       card.querySelectorAll('.chip-dupe-badge').forEach(b => {
-        b.style.transition = 'opacity 0.2s';
+        b.style.transition = 'opacity 0.2s linear';
         b.style.opacity    = '0';
         setTimeout(() => b.remove(), 200);
       });
       card.querySelectorAll('.open-tabs-badge').forEach(badge => {
         if (badge.textContent.includes('duplicate')) {
-          badge.style.transition = 'opacity 0.2s';
+          badge.style.transition = 'opacity 0.2s linear';
           badge.style.opacity    = '0';
           setTimeout(() => badge.remove(), 200);
         }
