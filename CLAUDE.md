@@ -1,0 +1,127 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+**TabSweep** — Chrome MV3 extension that replaces the new tab page with a dashboard of open tabs, grouped by domain / task / AI cache. Pure client-side JS: no bundler, no npm, no server. Product code lives entirely under `extension/`.
+
+## Commands
+
+No build or lint pipeline. Development is load-unpacked + reload.
+
+```bash
+# Only automated test: node asserts over DOM-free modules
+node extension/selfcheck.js
+
+# Install / reload in Chrome
+# 1. chrome://extensions → Developer mode → Load unpacked → select extension/
+# 2. After code changes: click Reload on the extension card (or reopen the new tab)
+```
+
+There is no single-test filter — edit `extension/selfcheck.js` and re-run. Do not load `selfcheck.js` from the extension; it is node-only (`vm` + `require`).
+
+## Layout
+
+```
+extension/
+  manifest.json      MV3 entry (newtab override, popup, side panel, service worker, alarms)
+  index.html         Shared UI for newtab / popup (?surface=popup) / panel (?surface=panel)
+  surface.js         Sets data-surface before paint (MV3 CSP forbids inline script)
+  app.js             Dashboard brain: fetch tabs, group, render, event delegation
+  background.js      Service worker: badge, auto-group, side-panel command, sweep alarm
+  grouping.js        DOM-free shared grouping (dual-loaded)
+  sweep.js           DOM-free stale/archive logic (dual-loaded)
+  ai-grouping.js     DOM-free cloud grouper (dashboard only)
+  selfcheck.js       Node asserts for the three DOM-free modules
+  style.css
+  config.local.js    Optional personal overrides (gitignored; may be absent)
+```
+
+## Architecture
+
+### Three surfaces, one page
+
+`index.html` + `app.js` power new tab, toolbar popup, and side panel. `surface.js` reads `?surface=` and sets `document.documentElement.dataset.surface` so compact CSS applies without a paint flash. Keyboard: `Cmd/Ctrl+Shift+K` opens the side panel via `chrome.commands` → `chrome.sidePanel.open` (must stay synchronous in the command callback — user-gesture constraint).
+
+### Dual-load modules
+
+`grouping.js` and `sweep.js` are plain scripts with top-level functions — no modules/exports. Loaded by:
+
+- Dashboard: `<script>` tags in `index.html` (after optional `config.local.js`)
+- Service worker: `importScripts('grouping.js', 'sweep.js')` in `background.js`
+
+This keeps dashboard cards and background auto-grouping / auto-sweep on the same definitions of "group title" and "stale". Do not introduce ES modules for these without a dual-load plan; `importScripts` cannot load ESM.
+
+`ai-grouping.js` is dashboard-only (network call on explicit "Smart group" click). Background auto-grouping stays domain-based and free.
+
+### Dashboard render pipeline (`app.js`)
+
+1. `fetchOpenTabs()` → `chrome.tabs.query`, map to local shape (`openerTabId`, `groupId`, `lastAccessed`, `isDashboard`, …).
+2. `getRealTabs()` filters to http(s)/file and non-dashboard pages.
+3. `computeTaskGroups(realTabs)` claims some tabs into task cards.
+4. Remaining tabs → domain cards, with a special `__landing-pages__` bucket and optional custom groups from `config.local.js`.
+5. `renderDomainCard` / workspaces / deferred column; actions via one delegated `document` click listener on `[data-action]`.
+
+Closing labeled/task cards uses exact-URL matching so a task card cannot close unrelated same-domain tabs.
+
+### Task grouping decision order (`grouping.js` → `computeTaskGroups`)
+
+1. `LOCAL_TASK_GROUPER` if defined in `config.local.js` (full override seam).
+2. Else `aiGroupCache` in storage: URL-keyed AI results mapped onto live tabs via `mapCachedGroupsToTabs` (≥2 live tabs per group).
+3. Else `openerChainClusters`: union-find on `openerTabId`; qualifies only at ≥3 tabs spanning ≥2 hostnames. Session-scoped (`openerTabId` dies on restart).
+
+Native tab group projection ("Group in Chrome" + background auto-group) stays domain-based via `groupTitleForUrl` / `colorForTitle`. Synthetic task domains (`__task-*__`) are skipped by `groupTabsInChrome`.
+
+### Auto-close sweep (`sweep.js` + alarm)
+
+- Defaults: `AUTO_CLOSE_DEFAULTS` in `sweep.js` (`enabled`, `intervalMin`, `tabStaleDays`, `groupStaleDays`, `sweepTime`).
+- User overrides: storage key `autoClose`.
+- Ungrouped tabs: individual staleness under `tabStaleMs`.
+- Native groups: whole group expires only when every member is stale under `groupStaleMs`.
+- Never stale: active, pinned, audible, dashboard pages, missing `lastAccessed` (Chrome &lt; 121 → feature silently off).
+- Path: `partitionSweepTargets` → `archiveAndClose` (append to `deferred` with `completed: true`, then `tabs.remove`). Manual banner and background alarm share this path.
+- Schedule: `chrome.alarms` name `tabSweep`. If `sweepTime` is `HH:MM`, daily at that clock time; else every `intervalMin` minutes. Rebuild alarm on install/startup and when `autoClose` changes.
+
+### AI grouping (`ai-grouping.js`)
+
+- Opt-in: only when user sets API key and clicks **Smart group**. No key → no network.
+- Settings: storage `aiGrouping` = `{ endpoint, apiKey, model, auto }` (`auto` reserved, not wired).
+- Wire formats: OpenAI `chat/completions` and Anthropic `messages` via `resolveApiEndpoints` (host/`/messages` / `/chat/completions` heuristics; DeepSeek anthropic proxy supported).
+- Cache: `aiGroupCache = { groups: [{ label, urls[] }] }` — URLs, not tab ids (ids die on restart).
+- Cap: 200 most-recently-accessed tabs; overflow stays on domain cards.
+- Requires `host_permissions` for the user's endpoint (manifest has broad http(s) for this).
+
+### Storage keys (`chrome.storage.local`)
+
+| Key | Purpose |
+|-----|---------|
+| `deferred` | Saved-for-later + archive (`completed` flag) |
+| `workspaces` | Stashed group snapshots |
+| `autoGroup` | Background domain auto-group (default on; only explicit `false` disables) |
+| `autoClose` | Sweep schedule + thresholds |
+| `aiGrouping` | Endpoint / key / model |
+| `aiGroupCache` | Last Smart-group result |
+| `lastSweep` / `lastSweepSeen` | Background sweep toast once |
+
+### Personal config (`extension/config.local.js`, gitignored)
+
+Optional globals merged by `grouping.js`:
+
+- `LOCAL_LANDING_PAGE_PATTERNS`
+- `LOCAL_CUSTOM_GROUPS`
+- `LOCAL_TASK_GROUPER` (async, same signature as `computeTaskGroups`)
+
+Loaded from `index.html` before `grouping.js`. **Not** loaded by the service worker by default — missing optional `importScripts` logs a noisy extension error even inside try/catch. To honor personal rules in auto-grouping, add an explicit `importScripts('config.local.js')` above the shipped import in `background.js` only when the file exists.
+
+### UI / safety notes that have already bitten
+
+- AI and title-derived labels go through `escapeHtml` before `innerHTML` card titles.
+- Event handling is `data-action` delegation — add actions there, not per-button listeners.
+- `sidePanel.open` must not be preceded by `await` in the command path.
+
+## Product defaults to preserve
+
+- Zero network when no AI key is configured.
+- Archive-before-close for sweeps (no silent data loss).
+- Background auto-group never touches pinned, non-http(s), already-grouped, or landing-page tabs.
