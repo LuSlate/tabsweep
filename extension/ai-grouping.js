@@ -3,8 +3,8 @@
  *
  * Sends the open tab list to a user-configured OpenAI-compatible
  * chat-completions endpoint and parses back groups, duplicates, and close suggestions.
- * Loaded by the dashboard only (<script> in index.html) — the
- * background auto-grouping stays domain-based and never calls this.
+ * Dual-loaded: the dashboard (Smart-group button) and the service worker (aiAuto alarm)
+ * both import this module; runAiTick is the shared entry point.
  *
  * Privacy: titles + URLs leave the machine ONLY when the user presses
  * "Smart group" with a configured API key. With no key, nothing here
@@ -394,4 +394,48 @@ async function probeChatEndpoint(settings) {
   if (res.status === 401 || res.status === 403) throw new Error('API key rejected (401/403)');
   if (res.status === 404) throw new Error('Endpoint not found (404) — check the URL');
   throw new Error(`API ${res.status}: ${(await res.text()).slice(0, 120)}`);
+}
+
+/**
+ * runAiTick(settings, { force } = {})
+ *   → Promise<{ groups, dupes, close } | null>
+ *
+ * The whole AI tick, shared by the dashboard Smart-group button
+ * (force: true) and the background aiAuto alarm. Queries tabs itself,
+ * skips quietly (null) when the sorted-URL signature is unchanged since
+ * the last tick — idle browsers don't burn tokens. Throws on missing
+ * apiKey or API failure; the background caller catches and warns.
+ *
+ * Storage written per successful tick:
+ *   aiGroupCache       { groups, dupes, ts }   — merged incremental groups
+ *   aiSweepSuggestions { items, ts }           — close suggestions (replaced)
+ *   lastAiSig          string                  — change detection
+ *   lastAiTick         { at, groups, dupes, close } — dashboard toast
+ */
+async function runAiTick(settings, { force = false } = {}) {
+  if (!settings || !settings.apiKey) throw new Error('Set an API key in ⚙ Settings first');
+
+  const all = await chrome.tabs.query({});
+  const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
+
+  const sig = tabs.map(t => t.url).sort().join('\n');
+  if (!force) {
+    const { lastAiSig } = await chrome.storage.local.get('lastAiSig');
+    if (lastAiSig === sig) return null;
+  }
+
+  const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+  const cachedGroups = aiGroupCache && Array.isArray(aiGroupCache.groups) ? aiGroupCache.groups : [];
+  const result = await callCloudGrouper(tabs, settings, cachedGroups);
+  const merged = mergeGroupsIntoCache(cachedGroups, result.groups);
+  const dupeExtras = result.dupes.reduce((n, c) => n + c.length - 1, 0);
+  const now = Date.now();
+
+  await chrome.storage.local.set({
+    aiGroupCache: { groups: merged, dupes: result.dupes, ts: now },
+    aiSweepSuggestions: { items: result.close, ts: now },
+    lastAiSig: sig,
+    lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
+  });
+  return { groups: merged, dupes: result.dupes, close: result.close };
 }

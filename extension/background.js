@@ -19,7 +19,7 @@
 // on the extension errors page even inside try/catch. If you have a config.local.js
 // and want auto-grouping to honor it, add `importScripts('config.local.js')` above
 // this line; grouping.js picks the globals up automatically.
-importScripts('grouping.js', 'sweep.js');
+importScripts('grouping.js', 'sweep.js', 'ai-grouping.js');
 
 // ─── Badge updater ────────────────────────────────────────────────────────────
 
@@ -74,12 +74,14 @@ async function updateBadge() {
 chrome.runtime.onInstalled.addListener(() => {
   updateBadge();
   setupSweepAlarm();
+  setupAiAutoAlarm();
 });
 
 // Update badge when Chrome starts up
 chrome.runtime.onStartup.addListener(() => {
   updateBadge();
   setupSweepAlarm();
+  setupAiAutoAlarm();
 });
 
 // Update badge whenever a tab is opened
@@ -129,6 +131,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if ('autoClose' in changes) {
     setupSweepAlarm(); // interval or enabled flag changed → rebuild the alarm
+  }
+  if ('aiGrouping' in changes) {
+    setupAiAutoAlarm(); // auto flag or key changed → rebuild the AI alarm
   }
 });
 
@@ -205,5 +210,32 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     updateBadge();
   } catch (err) {
     console.error('[TabSweep] auto-sweep failed:', err);
+  }
+});
+
+// ─── Scheduled AI tick (opt-in) ─────────────────────────────────────────────
+// Runs runAiTick every 30 min — but only when the user explicitly enabled it
+// (aiGrouping.auto) AND an apiKey exists. Zero network otherwise. Failures
+// are silent (console.warn): the next tick retries naturally.
+
+const AI_AUTO_ALARM = 'aiAuto';
+const AI_AUTO_PERIOD_MIN = 30;
+
+async function setupAiAutoAlarm() {
+  const { aiGrouping } = await chrome.storage.local.get('aiGrouping');
+  await chrome.alarms.clear(AI_AUTO_ALARM);
+  if (aiGrouping && aiGrouping.auto && aiGrouping.apiKey) {
+    chrome.alarms.create(AI_AUTO_ALARM, { periodInMinutes: AI_AUTO_PERIOD_MIN });
+  }
+}
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== AI_AUTO_ALARM) return;
+  try {
+    const { aiGrouping } = await chrome.storage.local.get('aiGrouping');
+    if (!aiGrouping || !aiGrouping.auto || !aiGrouping.apiKey) return;
+    await runAiTick(aiGrouping); // auto mode: signature check inside
+  } catch (err) {
+    console.warn('[tabsweep] ai tick failed:', err);
   }
 });
