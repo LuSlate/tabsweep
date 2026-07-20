@@ -64,7 +64,7 @@ check('partition: one fresh member keeps whole group', targets.length === 0);
 
 // ---- ai-grouping: parseGrouperResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, AI_GROUP_MAX_TABS })');
+  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, buildOpenerGraph, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -305,6 +305,44 @@ check('classify: x/twitter home → social',    ai.classifyUrlType('https://x.co
 check('classify: root path → root',           ai.classifyUrlType('https://example.com/', '') === 'root');
 check('classify: deep path → detail',         ai.classifyUrlType('https://example.com/a/b/c/d', '') === 'detail');
 check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url', '') === 'detail');
+
+// ---- buildOpenerGraph ----
+{
+  const tabs = [
+    {id: 1, openerTabId: undefined}, // orphan
+    {id: 2, openerTabId: 1},         // 1→2
+    {id: 3, openerTabId: 2},         // 1→2→3
+    {id: 4, openerTabId: 1},         // 1→4 (sibling of 2)
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  check('opener: root has no ancestors', graph.get(1).ancestors.length === 0);
+  check('opener: root chainDepth=0', graph.get(1).chainDepth === 0);
+  check('opener: root has 2 children', graph.get(1).descendants.length === 2);
+  check('opener: leaf has 2 ancestors', graph.get(3).ancestors.length === 2);
+  check('opener: leaf ancestor[0]=parent', graph.get(3).ancestors[0] === 2);
+  check('opener: leaf ancestor[1]=grandparent', graph.get(3).ancestors[1] === 1);
+  check('opener: leaf chainDepth=2', graph.get(3).chainDepth === 2);
+  check('opener: leaf has no descendants', graph.get(3).descendants.length === 0);
+}
+
+// Cycle guard
+{
+  const tabs = [
+    {id: 1, openerTabId: 2},
+    {id: 2, openerTabId: 1},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  check('opener: cycle detected, ancestors stopped', graph.get(1).ancestors.length === 1);
+  check('opener: cycle symmetric', graph.get(2).ancestors.length === 1);
+}
+
+// Orphan tab
+{
+  const tabs = [{id: 1, openerTabId: undefined}];
+  const graph = ai.buildOpenerGraph(tabs);
+  check('opener: orphan has no ancestors', graph.get(1).ancestors.length === 0);
+  check('opener: orphan chainDepth=0', graph.get(1).chainDepth === 0);
+}
 
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
 console.log('selfcheck OK');

@@ -103,6 +103,51 @@ function classifyUrlType(url, title) {
 }
 
 /**
+ * buildOpenerGraph(tabs)
+ *
+ * Constructs a bidirectional opener graph showing parent-child relationships
+ * (which tab opened which). Returns a Map with ancestors (path to root),
+ * descendants (direct children), and chainDepth (distance from root).
+ *
+ * Cycle-safe: traceAncestors stops at the first revisit.
+ */
+function buildOpenerGraph(tabs) {
+  const graph = new Map();
+  const idSet = new Set(tabs.map(t => t.id));
+
+  // Initialize all nodes
+  for (const t of tabs) {
+    graph.set(t.id, { ancestors: [], descendants: [], chainDepth: 0 });
+  }
+
+  // Build parent→child edges (descendants)
+  for (const t of tabs) {
+    if (t.openerTabId && idSet.has(t.openerTabId)) {
+      graph.get(t.openerTabId).descendants.push(t.id);
+    }
+  }
+
+  // Calculate ancestors and chain depth via DFS
+  function traceAncestors(tabId, visited = new Set()) {
+    if (visited.has(tabId)) return []; // cycle guard
+    visited.add(tabId);
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab || !tab.openerTabId || !idSet.has(tab.openerTabId)) return [];
+    const parent = tab.openerTabId;
+    if (visited.has(parent)) return []; // cycle: parent already in ancestry chain
+    return [parent, ...traceAncestors(parent, visited)];
+  }
+
+  for (const t of tabs) {
+    const node = graph.get(t.id);
+    node.ancestors = traceAncestors(t.id);
+    node.chainDepth = node.ancestors.length;
+  }
+
+  return graph;
+}
+
+/**
  * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
  *   → { payload, systemPrompt }
  *
