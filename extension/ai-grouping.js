@@ -16,20 +16,43 @@ const AI_GROUP_MAX_TABS = 200; // token guard; overflow falls to domain cards
 const GROUPER_SYSTEM_PROMPT = `You organize browser tabs. Respond with JSON only, no prose:
 {"groups":[{"label":"...","ids":[1,2]}],"dupes":[[3,4]],"close":[{"id":5,"reason":"..."}]}
 
-groups — cluster tabs whose entry lacks "grouped":true into task/topic groups:
-- Every group has at least 2 ids. An id appears in at most one group.
-- Omit tabs that fit nowhere. Never include ids flagged "grouped":true.
-- Label: 2-5 words in the dominant language of the group's tab titles.
-{EXISTING_LABELS}
-dupes — clusters of at least 2 ids showing the same content at different URLs
-(mirrors, reposts, a search page vs its result page):
-- First id in each cluster = the copy to keep. An id appears in at most one cluster.
+Each tab entry includes preprocessed signals:
+- urlType: root|list|detail|doc|code|search|social (page classification)
+- importance: core|peripheral|ephemeral (core = essential, ephemeral = disposable)
+- openerChain: depth in browsing tree (0 = root, higher = user navigated deeper)
+- hasDescendants: true if this tab opened other tabs
+- timeCluster: tabs with same cluster ID were opened within 30 minutes
+- windowId: Chrome window ID
+- chromeGroup: Chrome native group title (currently always null)
+- pathDepth: URL path segment count
+- age: days since last accessed
+- keep: true for pinned/audible/active (never group or close these)
+- grouped: true if already in a cached group (do not re-group)
 
-close — tabs worth closing (finished reading, expired events, outdated searches,
-superseded pages):
-- Never suggest ids flagged "keep":true.
-- Use "age" (days since last view) as a signal, not a rule.
-- "reason": at most 8 words, user-facing, in the tab title's language.
+groups — cluster semantically related tabs into task/topic groups:
+- Prioritize grouping tabs with:
+  • Same timeCluster (opened together)
+  • Connected via openerChain (parent-child browsing paths)
+  • Same chromeGroup (user signal)
+  • Shared URL path prefix (e.g., github.com/owner/repo/*)
+  • Related semantic content (titles, URL keywords)
+- Every group must have ≥2 ids. An id appears in at most one group.
+- Never include ids flagged "grouped":true or "keep":true.
+- {LABEL_LANG}
+{EXISTING_LABELS}
+
+dupes — clusters of ≥2 ids showing the same content at different URLs:
+- Mirrors, reposts, a search page vs its result page.
+- First id in each cluster = the copy to keep.
+- An id appears in at most one cluster.
+
+close — suggest closing tabs with strict protection rules:
+- NEVER suggest ids with importance:"core" or keep:true.
+- Prefer importance:"ephemeral" (search/list/social pages) if age ≥ 7 days.
+- OK to suggest importance:"peripheral" if age ≥ 14 days AND hasDescendants:false.
+- If multiple ids share the same timeCluster, suggest at most 1 from that cluster
+  (preserve task group visibility).
+- "reason": at most 8 words, user-facing, in the tab's language.
 - At most 20 suggestions; empty array when nothing is clearly closable.`;
 
 /**
@@ -48,7 +71,177 @@ function trimUrlForPrompt(url) {
 }
 
 /**
- * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
+ * classifyUrlType(url, title)
+ *
+ * Classifies a URL into one of 7 page types based on path structure,
+ * query parameters, and hostname patterns. Used to assign importance
+ * and guide grouping heuristics.
+ *
+ * Returns: 'root' | 'list' | 'detail' | 'doc' | 'code' | 'search' | 'social'
+ */
+function classifyUrlType(url, title) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname;
+    const query = u.search;
+    const host = u.hostname;
+
+    // Search pages
+    if (query.includes('q=') || query.includes('search=') || path.includes('/search')) {
+      return 'search';
+    }
+
+    // Social feeds
+    if (/twitter\.com|x\.com/.test(host) && path === '/home') return 'social';
+    if (/reddit\.com/.test(host) && /^\/(r\/[^/]+)?$/.test(path)) return 'social';
+
+    // Documentation
+    if (/docs?\.|developer\.|learn\.|guide\.|wiki\./.test(host)) return 'doc';
+    if (/mdn|stackoverflow|stackexchange/.test(host)) return 'doc';
+
+    // Code repositories
+    if (/github\.com/.test(host) && /\/blob\/|\/tree\//.test(path)) return 'code';
+    if (/gitlab\.com/.test(host) && /\/-\/blob\//.test(path)) return 'code';
+
+    // GitHub repo root pages (user/repo)
+    if (/github\.com/.test(host) && /^\/[^/]+\/[^/]+\/?$/.test(path)) return 'root';
+
+    // Root/home pages
+    const depth = path.split('/').filter(Boolean).length;
+    if (depth <= 1) return 'root';
+
+    // List pages (issues, PRs, directory listings)
+    if (/\/(issues|pulls|discussions|commits|projects|tags)$/.test(path)) return 'list';
+    if (/\/page\/\d+/.test(path)) return 'list';
+
+    // Detail pages (specific issue, article, file)
+    if (/\/(issues|pull)\/\d+/.test(path)) return 'detail';
+    if (depth >= 3) return 'detail';
+
+    // Default fallback
+    return 'detail';
+  } catch {
+    return 'detail';
+  }
+}
+
+/**
+ * buildOpenerGraph(tabs)
+ *
+ * Constructs a bidirectional opener graph showing parent-child relationships
+ * (which tab opened which). Returns a Map with ancestors (path to root),
+ * descendants (direct children), and chainDepth (distance from root).
+ *
+ * Cycle-safe: traceAncestors stops at the first revisit.
+ */
+function buildOpenerGraph(tabs) {
+  const graph = new Map();
+  const idSet = new Set(tabs.map(t => t.id));
+
+  // Initialize all nodes
+  for (const t of tabs) {
+    graph.set(t.id, { ancestors: [], descendants: [], chainDepth: 0 });
+  }
+
+  // Build parent→child edges (descendants)
+  for (const t of tabs) {
+    if (t.openerTabId && idSet.has(t.openerTabId)) {
+      graph.get(t.openerTabId).descendants.push(t.id);
+    }
+  }
+
+  // Calculate ancestors and chain depth via DFS
+  function traceAncestors(tabId, visited = new Set()) {
+    if (visited.has(tabId)) return []; // cycle guard
+    visited.add(tabId);
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab || !tab.openerTabId || !idSet.has(tab.openerTabId)) return [];
+    const parent = tab.openerTabId;
+    if (visited.has(parent)) return []; // cycle: parent already in ancestry chain
+    return [parent, ...traceAncestors(parent, visited)];
+  }
+
+  for (const t of tabs) {
+    const node = graph.get(t.id);
+    node.ancestors = traceAncestors(t.id);
+    node.chainDepth = node.ancestors.length;
+  }
+
+  return graph;
+}
+
+/**
+ * clusterByTime(tabs, windowMinutes = 30)
+ *
+ * Groups tabs by temporal proximity — tabs opened/accessed within the same
+ * time window get the same cluster ID. Uses lastAccessed when available,
+ * falls back to id as a proxy for creation order.
+ *
+ * Returns Map<tabId, clusterId> where clusterId is 'tc_000', 'tc_001', etc.
+ */
+function clusterByTime(tabs, windowMinutes = 30) {
+  const clusters = new Map();
+  const windowMs = windowMinutes * 60 * 1000;
+
+  // Sort by lastAccessed or fallback to id (proxy for creation order)
+  const sorted = [...tabs].sort((a, b) => {
+    const aTime = a.lastAccessed || a.id * 1000; // id as fallback timestamp
+    const bTime = b.lastAccessed || b.id * 1000;
+    return aTime - bTime;
+  });
+
+  let clusterIndex = 0;
+  let currentCluster = `tc_${String(clusterIndex).padStart(3, '0')}`;
+  let clusterStartTime = sorted[0]?.lastAccessed || sorted[0]?.id * 1000 || 0;
+
+  for (const tab of sorted) {
+    const tabTime = tab.lastAccessed || tab.id * 1000;
+    if (tabTime - clusterStartTime > windowMs) {
+      clusterIndex++;
+      currentCluster = `tc_${String(clusterIndex).padStart(3, '0')}`;
+      clusterStartTime = tabTime;
+    }
+    clusters.set(tab.id, currentCluster);
+  }
+
+  return clusters;
+}
+
+/**
+ * calculateTabImportance(tab, openerGraph, timeCluster, allTabs)
+ *
+ * Assigns one of three importance levels based on URL type, opener position,
+ * and reference count:
+ * - 'core': essential pages (docs, code, roots, hubs, pinned)
+ * - 'peripheral': middle ground (detail pages with activity)
+ * - 'ephemeral': disposable (search, social, dead-end lists)
+ *
+ * Used by close suggestions: core never suggested, peripheral conservatively,
+ * ephemeral is primary target.
+ */
+function calculateTabImportance(tab, openerGraph, timeCluster, allTabs) {
+  const urlType = classifyUrlType(tab.url, tab.title);
+  const node = openerGraph.get(tab.id);
+
+  // Core: essential pages that anchor tasks
+  if (tab.pinned) return 'core';
+  if (urlType === 'root' || urlType === 'doc' || urlType === 'code') return 'core';
+  if (node.chainDepth === 0 && node.descendants.length > 0) return 'core'; // root of a browsing tree
+
+  // Count how many other tabs directly reference this one as opener parent
+  const referencedBy = allTabs.filter(t => t.openerTabId === tab.id).length;
+  if (referencedBy >= 2) return 'core'; // hub tab
+
+  // Ephemeral: disposable pages
+  if (urlType === 'search' || urlType === 'social') return 'ephemeral';
+  if (urlType === 'list' && node.descendants.length === 0) return 'ephemeral'; // list page that led nowhere
+
+  // Peripheral: middle ground
+  return 'peripheral';
+}
+
+/**
+ * buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang)
  *   → { payload, systemPrompt }
  *
  * Builds the per-tab JSON payload and the mode-dependent system prompt.
@@ -57,29 +250,59 @@ function trimUrlForPrompt(url) {
  * age (whole days since lastAccessed — staleness signal for close).
  * cachedGroups non-empty → incremental mode: existing labels are listed
  * in the prompt so the model reuses them.
+ * labelLang 'zh' | 'en' pins group-label language to the UI language;
+ * unset → labels follow the dominant language of each group's tab titles.
  */
-function buildGrouperPayload(tabs, cachedGroups, now = Date.now()) {
+function buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang) {
   const groupedUrls = new Set();
   const labels = [];
   for (const g of cachedGroups || []) {
     if (g && typeof g.label === 'string' && g.label) labels.push(g.label);
     for (const u of (g && g.urls) || []) groupedUrls.add(u);
   }
+
+  // Preprocessing: compute structural signals
+  const openerGraph = buildOpenerGraph(tabs);
+  const timeClusters = clusterByTime(tabs, 30);
+
   const payload = tabs.map(t => {
+    const urlType = classifyUrlType(t.url, t.title);
+    const importance = calculateTabImportance(t, openerGraph, timeClusters, tabs);
+    const node = openerGraph.get(t.id);
+
     const entry = {
       id: t.id,
       title: (t.title || '').slice(0, 80),
       url: trimUrlForPrompt(t.url),
+      urlType,
+      importance,
+      openerChain: node.chainDepth,
+      hasDescendants: node.descendants.length > 0,
+      timeCluster: timeClusters.get(t.id),
+      windowId: t.windowId,
+      chromeGroup: null, // ponytail: fetching group titles via chrome.tabGroups adds async complexity; defer to future PR if grouping quality demands it
+      pathDepth: (() => { try { return new URL(t.url).pathname.split('/').filter(Boolean).length; } catch { return 0; } })(),
     };
+
     if (groupedUrls.has(t.url)) entry.grouped = true;
     if (t.pinned || t.audible || t.active) entry.keep = true;
     if (t.lastAccessed) entry.age = Math.max(0, Math.round((now - t.lastAccessed) / 86400000));
+
     return entry;
   });
-  const systemPrompt = GROUPER_SYSTEM_PROMPT.replace('{EXISTING_LABELS}',
-    labels.length > 0
-      ? `- Reuse an existing label when a tab fits it: ${labels.map(l => JSON.stringify(l)).join(', ')}. Create new labels sparingly.\n`
-      : '');
+
+  const labelLine = labelLang === 'zh'
+    ? 'Label: 2-5 words, in Simplified Chinese (简体中文, never Traditional).'
+    : labelLang === 'en'
+      ? 'Label: 2-5 words, in English.'
+      : "Label: 2-5 words in the dominant language of the group's tab titles.";
+  const systemPrompt = GROUPER_SYSTEM_PROMPT
+    .replace('{LABEL_LANG}', labelLine)
+    .replace('{EXISTING_LABELS}',
+      labels.length > 0
+        ? `- Reuse an existing label when a tab fits it: ${labels.map(l => JSON.stringify(l)).join(', ')}. Create new labels sparingly.\n`
+        : '');
+
   return { payload, systemPrompt };
 }
 
@@ -101,8 +324,17 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
 
   const api = resolveApiEndpoints(settings.endpoint);
   if (!api) throw new Error('Set an endpoint in ⚙ Settings first');
-  const { payload, systemPrompt } = buildGrouperPayload(sorted, cachedGroups);
+  // Group labels follow the UI language (storage `lang`, unset → browser)
+  let labelLang;
+  try {
+    const { lang } = await chrome.storage.local.get('lang');
+    labelLang = lang || (/^zh/i.test(navigator.language) ? 'zh' : 'en');
+  } catch { /* node/selfcheck context — dominant-language fallback */ }
+  const { payload, systemPrompt } = buildGrouperPayload(sorted, cachedGroups, Date.now(), labelLang);
   const body = JSON.stringify(payload);
+  // Reasoning models spend max_tokens on thinking before any text; too small
+  // → truncated/empty response ("stop: max_tokens"). User-tunable in settings.
+  const maxTokens = Number(settings.maxTokens) > 0 ? Number(settings.maxTokens) : 8192;
 
   const request = api.format === 'anthropic'
     ? {
@@ -115,7 +347,7 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
         },
         body: {
           model: settings.model,
-          max_tokens: 4096,
+          max_tokens: maxTokens,
           temperature: 0,
           system: systemPrompt,
           messages: [{ role: 'user', content: body }],
@@ -128,6 +360,7 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
         },
         body: {
           model: settings.model,
+          max_tokens: maxTokens,
           temperature: 0,
           messages: [
             { role: 'system', content: systemPrompt },
@@ -247,15 +480,26 @@ function parseGrouperResponse(content, tabs) {
 /**
  * applyKeepRules(result, tabs) → same shape as parseGrouperResponse
  *
- * The model is TOLD not to close pinned/audible/active tabs — this is
- * the belt-and-suspenders enforcement: filter them out of close, and
+ * The model is TOLD not to close pinned/audible/active/core tabs — this
+ * is the belt-and-suspenders enforcement: filter them out of close, and
  * when a dupe cluster contains a keep-tab, move its url to the front
- * (the kept copy) so the safe one survives.
+ * (the kept copy) so the safe one survives. Core is recomputed here
+ * (same signals as buildGrouperPayload) so a model that ignores the
+ * prompt's "never suggest core" rule still can't get one through.
  */
 function applyKeepRules(result, tabs) {
   const keepUrls = new Set(
     tabs.filter(t => t.pinned || t.audible || t.active).map(t => t.url));
-  const close = result.close.filter(c => !keepUrls.has(c.url));
+  const urlToTab = new Map();
+  for (const t of tabs) if (!urlToTab.has(t.url)) urlToTab.set(t.url, t);
+  const graph = buildOpenerGraph(tabs);
+  const clusters = clusterByTime(tabs, 30);
+  const close = result.close.filter(c => {
+    if (keepUrls.has(c.url)) return false;
+    const tab = urlToTab.get(c.url);
+    if (tab && calculateTabImportance(tab, graph, clusters, tabs) === 'core') return false;
+    return true;
+  });
   const dupes = result.dupes.map(cluster => {
     const idx = cluster.findIndex(u => keepUrls.has(u));
     if (idx <= 0) return cluster;

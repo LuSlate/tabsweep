@@ -203,20 +203,43 @@ async function closeDashboardDupes() {
 }
 
 /**
- * groupTabsInChrome()
+ * groupTabsInChrome({ silent, ungroupFirst } = {})
  *
- * Projects dashboard's domain groups onto Chrome's native tab groups.
+ * Projects dashboard groups — domain groups AND AI task groups (their AI
+ * labels become the native group titles) — onto Chrome's native tab groups.
  * - Skips the landing-pages bucket (mixed domains — a native group would be noise).
  * - Skips tabs already in a native group (never disturbs hand-made groups; idempotent).
- * - Native groups can't span windows, so buckets are per (domain group × window),
+ * - Native groups can't span windows, so buckets are per (group × window),
  *   and only buckets with 2+ tabs become groups.
+ * - A same-titled native group already in the window is reused (new tabs
+ *   join it) instead of spawning a duplicate — matters now that Smart group
+ *   auto-projects after every run.
+ * - silent: suppress the result toast (auto-projection after Smart group
+ *   already toasts the AI outcome).
+ * - ungroupFirst: dissolve all existing native groups before projection — use
+ *   when cached-label language changed (old Traditional Chinese groups block
+ *   new Simplified ones). Pinned tabs stay pinned, just become ungrouped.
  */
 
-async function groupTabsInChrome() {
+async function groupTabsInChrome({ silent = false, ungroupFirst = false } = {}) {
+  if (ungroupFirst) {
+    console.log('[tabsweep] ungroupFirst: dissolving all native groups');
+    try {
+      const groups = await chrome.tabGroups.query({});
+      for (const g of groups) {
+        await chrome.tabs.ungroup(await chrome.tabs.query({ groupId: g.id }).then(tabs => tabs.map(t => t.id)));
+      }
+      console.log('[tabsweep] ungroupFirst: dissolved', groups.length, 'groups');
+    } catch (err) {
+      console.warn('[tabsweep] ungroupFirst failed:', err);
+    }
+  }
+
   let tabsGrouped = 0, groupsMade = 0;
+  console.log('[tabsweep] groupTabsInChrome: processing', domainGroups.length, 'groups');
 
   for (const group of domainGroups) {
-    if (group.domain === '__landing-pages__' || group.domain.startsWith('__task-')) continue;
+    if (group.domain === '__landing-pages__') continue;
 
     // Bucket this group's ungrouped tabs by window (native groups are per-window)
     const byWindow = {};
@@ -226,9 +249,16 @@ async function groupTabsInChrome() {
     }
 
     const title = group.label || friendlyDomain(group.domain);
-    for (const tabIds of Object.values(byWindow)) {
-      if (tabIds.length < 2) continue; // grouping one tab is just noise
+    console.log('[tabsweep] group', group.domain, 'title:', title, 'windows:', Object.keys(byWindow).length);
+    for (const [windowId, tabIds] of Object.entries(byWindow)) {
       try {
+        const [existing] = await chrome.tabGroups.query({ windowId: Number(windowId), title });
+        if (existing) {
+          await chrome.tabs.group({ tabIds, groupId: existing.id });
+          tabsGrouped += tabIds.length;
+          continue;
+        }
+        if (tabIds.length < 2) continue; // starting a group with one tab is just noise
         const groupId = await chrome.tabs.group({ tabIds });
         await chrome.tabGroups.update(groupId, {
           title,
@@ -236,15 +266,54 @@ async function groupTabsInChrome() {
         });
         tabsGrouped += tabIds.length;
         groupsMade++;
-      } catch {
-        // Tab/window vanished mid-flight — skip this bucket, keep going
+      } catch (err) {
+        console.warn('[tabsweep] groupTabsInChrome failed for', title, 'window', windowId, err);
       }
     }
   }
 
-  showToast(groupsMade > 0
+  console.log('[tabsweep] groupTabsInChrome done:', tabsGrouped, 'tabs,', groupsMade, 'new groups');
+  await tidyTabStrip();
+
+  if (silent) return;
+  showToast(groupsMade > 0 || tabsGrouped > 0
     ? t('toastGrouped', { n: tabsGrouped, m: groupsMade, s: groupsMade !== 1 ? 's' : '' })
     : t('toastNothingGroup'));
+}
+
+/**
+ * tidyTabStrip()
+ *
+ * Post-projection strip cleanup, per window that has native groups:
+ * loose (ungrouped, unpinned) tabs move to the end — groups first, strays
+ * last — then every group collapses so the strip reads as a folder row.
+ * Collapsing the active tab's group makes Chrome refocus a nearby loose
+ * tab; the dashboard tab is loose, so this is a non-issue in practice.
+ */
+async function tidyTabStrip() {
+  try {
+    const groups = await chrome.tabGroups.query({});
+    const groupedWindows = new Set(groups.map(g => g.windowId));
+    console.log('[tabsweep] tidyTabStrip:', groups.length, 'groups across', groupedWindows.size, 'windows');
+
+    for (const windowId of groupedWindows) {
+      const loose = await chrome.tabs.query({ windowId, pinned: false, groupId: -1 });
+      const looseIds = loose.map(t => t.id);
+      if (looseIds.length > 0) {
+        console.log('[tabsweep] tidyTabStrip: moving', looseIds.length, 'loose tabs to end of window', windowId);
+        await chrome.tabs.move(looseIds, { index: -1 });
+      }
+    }
+
+    for (const g of groups) {
+      if (!g.collapsed) {
+        console.log('[tabsweep] tidyTabStrip: collapsing group', g.id, g.title);
+        await chrome.tabGroups.update(g.id, { collapsed: true });
+      }
+    }
+  } catch (err) {
+    console.warn('[tabsweep] tidyTabStrip failed:', err);
+  }
 }
 
 
@@ -496,6 +565,7 @@ const AI_GROUPING_DEFAULTS = {
   endpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
   model: 'gpt-4o-mini',
+  maxTokens: 8192,   // response cap; reasoning models spend it on thinking first
   auto: false,   // background aiAuto alarm every 30 min (background.js) when enabled
 };
 
@@ -514,6 +584,7 @@ async function populateSettingsPanel() {
   document.getElementById('setAiEndpoint').value       = ai.endpoint;
   document.getElementById('setAiKey').value            = ai.apiKey;
   document.getElementById('setAiModel').value          = ai.model;
+  document.getElementById('setAiMaxTokens').value      = ai.maxTokens;
   document.getElementById('setAiAuto').checked         = ai.auto === true;
   document.getElementById('setAutoCloseEnabled').checked = ac.enabled;
   document.getElementById('setIntervalMin').value      = ac.intervalMin;
@@ -1446,6 +1517,7 @@ document.addEventListener('click', async (e) => {
         endpoint: document.getElementById('setAiEndpoint').value.trim() || AI_GROUPING_DEFAULTS.endpoint,
         apiKey:   document.getElementById('setAiKey').value.trim(),
         model:    document.getElementById('setAiModel').value.trim() || AI_GROUPING_DEFAULTS.model,
+        maxTokens: Math.round(num('setAiMaxTokens', AI_GROUPING_DEFAULTS.maxTokens, 256)),
         auto:     document.getElementById('setAiAuto').checked,
       },
       autoClose: {
@@ -1472,8 +1544,10 @@ document.addEventListener('click', async (e) => {
     }
     actionEl.disabled = true;
     actionEl.textContent = t('grouping');
+    let aiOk = false;
     try {
       const result = await runAiTick(settings, { force: true });
+      aiOk = true;
       const dupeN = result.dupes.reduce((n, c) => n + c.length - 1, 0);
       showToast(t('toastAiTick', { g: result.groups.length, d: dupeN, c: result.close.length }));
       // We just toasted the outcome — don't let the tick notice repeat it
@@ -1484,6 +1558,12 @@ document.addEventListener('click', async (e) => {
       showToast(t('toastSmartFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
+    // Dashboard now holds the fresh AI task groups — mirror them onto the
+    // native tab strip (silent: the AI toast above already reported).
+    if (aiOk) {
+      console.log('[tabsweep] smart-group OK, auto-projecting', domainGroups.length, 'groups');
+      await groupTabsInChrome({ silent: true, ungroupFirst: true });
+    }
     return;
   }
 
@@ -1496,9 +1576,11 @@ document.addEventListener('click', async (e) => {
     }
     actionEl.disabled = true;
     actionEl.textContent = t('regrouping');
+    let aiOk = false;
     try {
       await chrome.storage.local.remove('aiGroupCache');
       const result = await runAiTick(settings, { force: true });
+      aiOk = true;
       showToast(t('toastRegrouped', { n: result.groups.length }));
       const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
       if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
@@ -1507,6 +1589,7 @@ document.addEventListener('click', async (e) => {
       showToast(t('toastRegroupFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
+    if (aiOk) await groupTabsInChrome({ silent: true, ungroupFirst: true });
     return;
   }
 

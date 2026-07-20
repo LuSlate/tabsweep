@@ -64,7 +64,7 @@ check('partition: one fresh member keeps whole group', targets.length === 0);
 
 // ---- ai-grouping: parseGrouperResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, AI_GROUP_MAX_TABS })');
+  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, buildOpenerGraph, clusterByTime, calculateTabImportance, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -115,20 +115,33 @@ try { ai.parseGrouperResponse('no json here', ptabs); } catch { threw = true; }
 check('parse: garbage content throws', threw);
 
 // ---- ai-grouping: applyKeepRules ----
+// non-root paths (depth ≥ 2) so these aren't incidentally classified urlType:'root' → core
 const keepTabs = [
   { id: 1, url: 'https://a.com/', pinned: true },
-  { id: 2, url: 'https://b.com/' },
-  { id: 3, url: 'https://c.com/' },
+  { id: 2, url: 'https://b.com/page/detail' },
+  { id: 3, url: 'https://c.com/page/detail' },
 ];
 const kr = ai.applyKeepRules({
   groups: [],
-  dupes: [['https://b.com/', 'https://a.com/', 'https://c.com/']],
-  close: [{ url: 'https://a.com/', reason: 'x' }, { url: 'https://b.com/', reason: 'y' }],
+  dupes: [['https://b.com/page/detail', 'https://a.com/', 'https://c.com/page/detail']],
+  close: [{ url: 'https://a.com/', reason: 'x' }, { url: 'https://b.com/page/detail', reason: 'y' }],
 }, keepTabs);
 check('keep: close filters pinned/active/audible urls',
-  kr.close.length === 1 && kr.close[0].url === 'https://b.com/');
+  kr.close.length === 1 && kr.close[0].url === 'https://b.com/page/detail');
 check('keep: dupe cluster reordered so keep url is first',
   kr.dupes[0][0] === 'https://a.com/');
+
+const coreTabs = [
+  { id: 1, url: 'https://github.com/user/repo', pinned: false, active: false, audible: false },
+  { id: 2, url: 'https://google.com/search?q=old+stuff', pinned: false, active: false, audible: false, lastAccessed: NOW - 30 * DAY },
+];
+const krCore = ai.applyKeepRules({
+  groups: [],
+  dupes: [],
+  close: [{ url: 'https://github.com/user/repo', reason: 'x' }, { url: 'https://google.com/search?q=old+stuff', reason: 'y' }],
+}, coreTabs);
+check('keep: close drops core tab (github repo root), ephemeral survives',
+  krCore.close.length === 1 && krCore.close[0].url === 'https://google.com/search?q=old+stuff');
 
 // ---- ai-grouping: mergeGroupsIntoCache ----
 let mg = ai.mergeGroupsIntoCache(
@@ -159,6 +172,17 @@ check('payload: existing labels listed in prompt', bp.systemPrompt.includes('"Ol
 
 const bpFull = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000);
 check('payload: full mode has no labels line', !bpFull.systemPrompt.includes('Reuse an existing label'));
+
+const bpQuery = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/x?path=/b/c/d' }], [], 1000);
+check('payload: pathDepth counted from pathname, not query-string slashes',
+  bpQuery.payload[0].pathDepth === 1);
+
+const bpZh = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000, 'zh');
+check('payload: labelLang zh pins labels to Simplified Chinese', bpZh.systemPrompt.includes('简体中文'));
+const bpEn = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000, 'en');
+check('payload: labelLang en pins labels to English', bpEn.systemPrompt.includes('in English.'));
+check('payload: no labelLang falls back to dominant language',
+  bpFull.systemPrompt.includes('dominant language'));
 
 check('trimUrl: hash stripped',
   ai.trimUrlForPrompt('https://a.com/p?q=1#frag') === 'https://a.com/p?q=1');
@@ -291,6 +315,156 @@ i18n.setLang('en');
 const enKeys = Object.keys(i18n.I18N.en).sort().join(',');
 const zhKeys = Object.keys(i18n.I18N.zh).sort().join(',');
 check('i18n: en/zh key parity', enKeys === zhKeys);
+
+// ---- classifyUrlType ----
+check('classify: google search → search',    ai.classifyUrlType('https://google.com/search?q=test', '') === 'search');
+check('classify: github repo root → root',    ai.classifyUrlType('https://github.com/user/repo', '') === 'root');
+check('classify: github issues list → list',  ai.classifyUrlType('https://github.com/user/repo/issues', '') === 'list');
+check('classify: github issue detail → detail', ai.classifyUrlType('https://github.com/user/repo/issues/42', '') === 'detail');
+check('classify: github code blob → code',    ai.classifyUrlType('https://github.com/user/repo/blob/main/file.js', '') === 'code');
+check('classify: MDN → doc',                  ai.classifyUrlType('https://developer.mozilla.org/en-US/docs/Web', '') === 'doc');
+check('classify: stackoverflow → doc',        ai.classifyUrlType('https://stackoverflow.com/questions/123', '') === 'doc');
+check('classify: reddit feed → social',       ai.classifyUrlType('https://reddit.com/r/programming', '') === 'social');
+check('classify: x/twitter home → social',    ai.classifyUrlType('https://x.com/home', '') === 'social');
+check('classify: root path → root',           ai.classifyUrlType('https://example.com/', '') === 'root');
+check('classify: deep path → detail',         ai.classifyUrlType('https://example.com/a/b/c/d', '') === 'detail');
+check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url', '') === 'detail');
+
+// ---- buildOpenerGraph ----
+{
+  const tabs = [
+    {id: 1, openerTabId: undefined}, // orphan
+    {id: 2, openerTabId: 1},         // 1→2
+    {id: 3, openerTabId: 2},         // 1→2→3
+    {id: 4, openerTabId: 1},         // 1→4 (sibling of 2)
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  check('opener: root has no ancestors', graph.get(1).ancestors.length === 0);
+  check('opener: root chainDepth=0', graph.get(1).chainDepth === 0);
+  check('opener: root has 2 children', graph.get(1).descendants.length === 2);
+  check('opener: leaf has 2 ancestors', graph.get(3).ancestors.length === 2);
+  check('opener: leaf ancestor[0]=parent', graph.get(3).ancestors[0] === 2);
+  check('opener: leaf ancestor[1]=grandparent', graph.get(3).ancestors[1] === 1);
+  check('opener: leaf chainDepth=2', graph.get(3).chainDepth === 2);
+  check('opener: leaf has no descendants', graph.get(3).descendants.length === 0);
+}
+
+// Cycle guard
+{
+  const tabs = [
+    {id: 1, openerTabId: 2},
+    {id: 2, openerTabId: 1},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  check('opener: cycle detected, ancestors stopped', graph.get(1).ancestors.length === 1);
+  check('opener: cycle symmetric', graph.get(2).ancestors.length === 1);
+}
+
+// Orphan tab
+{
+  const tabs = [{id: 1, openerTabId: undefined}];
+  const graph = ai.buildOpenerGraph(tabs);
+  check('opener: orphan has no ancestors', graph.get(1).ancestors.length === 0);
+  check('opener: orphan chainDepth=0', graph.get(1).chainDepth === 0);
+}
+
+// ---- ai-grouping: clusterByTime ----
+{
+  const now = Date.now();
+  const tabs = [
+    {id: 1, lastAccessed: now - 60 * 60 * 1000},        // 1 hour ago
+    {id: 2, lastAccessed: now - 50 * 60 * 1000},        // 50 min ago (same cluster as 1)
+    {id: 3, lastAccessed: now - 10 * 60 * 1000},        // 10 min ago (new cluster)
+    {id: 4, lastAccessed: now - 5 * 60 * 1000},         // 5 min ago (same cluster as 3)
+  ];
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('time: tabs within 30min share cluster', clusters.get(1) === clusters.get(2));
+  check('time: recent tabs clustered together', clusters.get(3) === clusters.get(4));
+  check('time: 40min gap creates new cluster', clusters.get(1) !== clusters.get(3));
+  check('time: cluster ID format tc_NNN', /^tc_\d{3}$/.test(clusters.get(1)));
+}
+
+// Fallback to id when lastAccessed missing
+{
+  const tabs = [
+    {id: 100, lastAccessed: undefined},
+    {id: 200, lastAccessed: undefined},
+  ];
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('time: missing lastAccessed falls back to id', clusters.get(100) !== undefined);
+  check('time: all tabs get a cluster', clusters.get(200) !== undefined);
+}
+
+// ---- ai-grouping: calculateTabImportance ----
+{
+  const tabs = [
+    {id: 1, url: 'https://github.com/user/repo', title: 'Repo', pinned: false, openerTabId: undefined},
+    {id: 2, url: 'https://google.com/search?q=test', title: 'Search', pinned: false, openerTabId: 1},
+    {id: 3, url: 'https://developer.mozilla.org/docs', title: 'MDN', pinned: false, openerTabId: 1},
+    {id: 4, url: 'https://example.com/article', title: 'Article', pinned: true, openerTabId: undefined},
+    {id: 5, url: 'https://reddit.com/r/programming', title: 'Reddit', pinned: false, openerTabId: undefined},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  const clusters = ai.clusterByTime(tabs, 30);
+
+  check('importance: repo root → core', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'core');
+  check('importance: search → ephemeral', ai.calculateTabImportance(tabs[1], graph, clusters, tabs) === 'ephemeral');
+  check('importance: doc → core', ai.calculateTabImportance(tabs[2], graph, clusters, tabs) === 'core');
+  check('importance: pinned → core', ai.calculateTabImportance(tabs[3], graph, clusters, tabs) === 'core');
+  check('importance: social feed → ephemeral', ai.calculateTabImportance(tabs[4], graph, clusters, tabs) === 'ephemeral');
+}
+
+// Hub tab (referenced by multiple tabs)
+{
+  const tabs = [
+    {id: 1, url: 'https://example.com/hub', title: 'Hub', pinned: false, openerTabId: undefined},
+    {id: 2, url: 'https://example.com/a', title: 'A', pinned: false, openerTabId: 1},
+    {id: 3, url: 'https://example.com/b', title: 'B', pinned: false, openerTabId: 1},
+    {id: 4, url: 'https://example.com/c', title: 'C', pinned: false, openerTabId: 1},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('importance: hub with 3 descendants → core', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'core');
+}
+
+// List page with no descendants
+{
+  const tabs = [
+    {id: 1, url: 'https://github.com/user/repo/issues', title: 'Issues', pinned: false, openerTabId: undefined},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('importance: list page with no children → ephemeral', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'ephemeral');
+}
+
+// ---- ai-grouping: buildGrouperPayload integration test ----
+{
+  const tabs = [
+    {id: 1, url: 'https://github.com/user/repo', title: 'Repo', pinned: false, active: false, audible: false,
+     openerTabId: undefined, windowId: 1, groupId: -1, lastAccessed: Date.now() - 5 * 86400000},
+    {id: 2, url: 'https://google.com/search?q=test', title: 'Search', pinned: false, active: false, audible: false,
+     openerTabId: 1, windowId: 1, groupId: -1, lastAccessed: Date.now() - 1000},
+  ];
+  const { payload, systemPrompt } = ai.buildGrouperPayload(tabs, [], Date.now());
+
+  check('payload: 2 entries', payload.length === 2);
+  check('payload: tab 1 urlType=root', payload[0].urlType === 'root');
+  check('payload: tab 1 importance=core', payload[0].importance === 'core');
+  check('payload: tab 1 openerChain=0', payload[0].openerChain === 0);
+  check('payload: tab 1 has descendants', payload[0].hasDescendants === true);
+  check('payload: tab 1 has timeCluster', typeof payload[0].timeCluster === 'string');
+  check('payload: tab 1 windowId=1', payload[0].windowId === 1);
+  check('payload: tab 1 chromeGroup=null (no native group)', payload[0].chromeGroup === null);
+  check('payload: tab 1 age=5 days', payload[0].age === 5);
+
+  check('payload: tab 2 urlType=search', payload[1].urlType === 'search');
+  check('payload: tab 2 importance=ephemeral', payload[1].importance === 'ephemeral');
+  check('payload: tab 2 openerChain=1', payload[1].openerChain === 1);
+  check('payload: tab 2 no descendants', payload[1].hasDescendants === false);
+
+  check('payload: system prompt mentions urlType', systemPrompt.includes('urlType'));
+  check('payload: system prompt mentions importance', systemPrompt.includes('importance'));
+}
 
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
 console.log('selfcheck OK');

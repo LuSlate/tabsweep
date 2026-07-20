@@ -80,7 +80,7 @@ zh/en UI with a topbar `#langToggle` (data-action `toggle-lang`); choice persist
 2. Else `aiGroupCache` in storage: URL-keyed AI results mapped onto live tabs via `mapCachedGroupsToTabs` (≥2 live tabs per group).
 3. Else `openerChainClusters`: union-find on `openerTabId`; qualifies only at ≥3 tabs spanning ≥2 hostnames. Session-scoped (`openerTabId` dies on restart).
 
-Native tab group projection ("Group in Chrome" + background auto-group) stays domain-based via `groupTitleForUrl` / `colorForTitle`. Synthetic task domains (`__task-*__`) are skipped by `groupTabsInChrome`.
+Native tab group projection: `groupTabsInChrome` projects domain groups AND AI task groups (AI labels become native group titles), reuses a same-titled native group per window instead of duplicating, and never moves tabs already in a native group. It auto-runs silently after a successful Smart group / Re-group all; background auto-group stays domain-based via `groupTitleForUrl` / `colorForTitle`. After projection `tidyTabStrip` moves loose (ungrouped, unpinned) tabs to the end of each grouped window and collapses every native group. AI group labels follow the UI language (`lang` storage key → `labelLang` param of `buildGrouperPayload`; unset → browser language; zh pins 简体中文).
 
 ### Auto-close sweep (`sweep.js` + alarm)
 
@@ -97,6 +97,9 @@ Native tab group projection ("Group in Chrome" + background auto-group) stays do
 - Opt-in: network only with an API key, on **Smart group** / **Re-group all** clicks or the background tick. No key → no network.
 - Settings: storage `aiGrouping` = `{ endpoint, apiKey, model, auto }` (`auto` = background tick).
 - **AI tick**: `runAiTick(settings, {force})` is the single orchestrator (dashboard + service worker). One model call returns `{ groups, dupes, close }` — incremental groups (cached labels reused via `mergeGroupsIntoCache`), semantic dupe clusters, close suggestions — all URL-keyed. Auto mode skips when the sorted-URL signature (`lastAiSig`) is unchanged.
+- **Preprocessing layer**: Client-side functions (`classifyUrlType`, `buildOpenerGraph`, `clusterByTime`, `calculateTabImportance`) extract structural signals before the model call. Payload includes 8 additional fields: `urlType` (7-way page classification), `importance` (core/peripheral/ephemeral), `openerChain` (browsing depth), `hasDescendants`, `timeCluster` (30min window), `windowId`, `chromeGroup` (null for now), `pathDepth`.
+- **Close protection**: Model never suggests `importance:"core"` tabs (docs/code/roots/hubs/pinned). `ephemeral` (search/social) closable at 7+ days, `peripheral` at 14+ days AND no descendants. Max 1 close per timeCluster (preserves task visibility).
+- **Grouping heuristics**: Model prioritizes same `timeCluster`, `openerChain` connections, same `chromeGroup`, shared URL path prefixes, semantic content.
 - Background: alarm `aiAuto`, 30 min, created only when `auto && apiKey`; failures silent (`console.warn`).
 - Review flow: close suggestions land in `aiSweepSuggestions`, render as the first dashboard band with checkboxes; confirm/dismiss are human actions and confirm goes through `archiveAndClose`. Dupes surface as a command-bar chip (`mapCachedDupesToTabs`); `applyKeepRules` keeps pinned/active/audible out of close suggestions and at the keep-position of dupe clusters.
 - Wire formats: OpenAI `chat/completions` and Anthropic `messages` via `resolveApiEndpoints` (host/`/messages` / `/chat/completions` heuristics; DeepSeek anthropic proxy supported — its model listing lives on the OpenAI root with Bearer auth).

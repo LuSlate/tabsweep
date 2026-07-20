@@ -40,6 +40,9 @@
       <input type="text" id="setAiModel" placeholder="gpt-4o-mini / claude-haiku-4-5" autocomplete="off" list="modelList">
       <datalist id="modelList"></datalist>
     </label>
+    <label class="settings-field"><span data-i18n="maxTokensLabel">Max response tokens</span>
+      <input type="number" id="setAiMaxTokens" min="256" step="256" placeholder="8192">
+    </label>
     <button class="action-btn" data-action="test-connection" data-i18n="testConnection">Test connection &amp; list models</button>
 
     <label class="settings-field settings-inline">
