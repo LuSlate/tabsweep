@@ -198,8 +198,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     const realTabs = tabs.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
 
     const targets = partitionSweepTargets(realTabs, {
-      tabStaleMs:   cfg.tabStaleDays   * DAY_MS,
-      groupStaleMs: cfg.groupStaleDays * DAY_MS,
+      tabStaleMs:   cfg.tabStaleMinutes   * 60 * 1000,
+      groupStaleMs: cfg.groupStaleMinutes * 60 * 1000,
     });
     if (targets.length === 0) return;
 

@@ -11,9 +11,10 @@
 // Default auto-close settings. User overrides live in chrome.storage.local
 // under the `autoClose` key; app.js (settings panel) and background.js
 // (alarm handler) both merge stored values over these defaults.
-const AUTO_CLOSE_DEFAULTS = { enabled: true, intervalMin: 60, tabStaleDays: 1, groupStaleDays: 3, sweepTime: '' };
+const AUTO_CLOSE_DEFAULTS = { enabled: true, intervalMin: 60, tabStaleMinutes: 120, groupStaleMinutes: 360, sweepTime: '' };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 
 /**
  * nextSweepTime(hhmm)

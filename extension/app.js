@@ -588,8 +588,8 @@ async function populateSettingsPanel() {
   document.getElementById('setAiAuto').checked         = ai.auto === true;
   document.getElementById('setAutoCloseEnabled').checked = ac.enabled;
   document.getElementById('setIntervalMin').value      = ac.intervalMin;
-  document.getElementById('setTabStaleDays').value     = ac.tabStaleDays;
-  document.getElementById('setGroupStaleDays').value   = ac.groupStaleDays;
+  document.getElementById('setTabStaleMinutes').value     = ac.tabStaleMinutes;
+  document.getElementById('setGroupStaleMinutes').value   = ac.groupStaleMinutes;
   document.getElementById('setSweepTime').value        = ac.sweepTime || '';
 }
 
@@ -1272,7 +1272,7 @@ async function renderStaticDashboard() {
   // Stale threshold follows the autoClose setting (single source of truth
   // shared by the banner, the chip dimming, and the background alarm)
   const autoCloseCfg = await getAutoCloseSettings();
-  currentStaleMs = autoCloseCfg.tabStaleDays * DAY_MS;
+  currentStaleMs = autoCloseCfg.tabStaleMinutes * 60 * 1000;
 
   // Auto-grouping flag (absent = on) — drives the "Auto" toggle in the header
   const { autoGroup: autoGroupOn = true } = await chrome.storage.local.get('autoGroup');
@@ -1521,16 +1521,16 @@ document.addEventListener('click', async (e) => {
         auto:     document.getElementById('setAiAuto').checked,
       },
       autoClose: {
-        enabled:        document.getElementById('setAutoCloseEnabled').checked,
-        intervalMin:    Math.max(1, Math.round(num('setIntervalMin', current.intervalMin, 1))),
-        tabStaleDays:   num('setTabStaleDays', current.tabStaleDays, 0.0001),
-        groupStaleDays: num('setGroupStaleDays', current.groupStaleDays, 0.0001),
-        sweepTime:      document.getElementById('setSweepTime').value, // '' = interval mode
+        enabled:           document.getElementById('setAutoCloseEnabled').checked,
+        intervalMin:       Math.max(1, Math.round(num('setIntervalMin', current.intervalMin, 1))),
+        tabStaleMinutes:   Math.max(1, Math.round(num('setTabStaleMinutes', current.tabStaleMinutes, 1))),
+        groupStaleMinutes: Math.max(1, Math.round(num('setGroupStaleMinutes', current.groupStaleMinutes, 1))),
+        sweepTime:         document.getElementById('setSweepTime').value, // '' = interval mode
       },
     });
     showToast(t('toastSettingsSaved'));
     const ac = await getAutoCloseSettings();
-    currentStaleMs = ac.tabStaleDays * DAY_MS;
+    currentStaleMs = ac.tabStaleMinutes * 60 * 1000;
     renderStaticDashboard(); // refresh the command bar with new stale threshold
     return;
   }
