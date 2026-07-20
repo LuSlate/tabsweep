@@ -30,7 +30,20 @@ superseded pages):
 - Never suggest ids flagged "keep":true.
 - Use "age" (days since last view) as a signal, not a rule.
 - "reason": at most 8 words, user-facing, in the tab title's language.
-- At most 20 suggestions; empty array when nothing is clearly closable.`;
+- At most 20 suggestions; empty array when nothing is clearly closable.
+
+Per-tab fields you receive:
+- urlType: one of root|list|detail|doc|code|search|social — page class
+- importance: core|peripheral|ephemeral — how critical the tab is
+- openerChain: 0 = no parent in open tabs, >0 = depth from root
+- hasDescendants: true when other open tabs were opened from this one
+- timeCluster: group id for tabs opened near each other in time
+- windowId: which browser window this tab lives in
+- chromeGroup: native Chrome tab group title (if any, else null)
+- pathDepth: number of URL path segments
+- grouped: true when already claimed by a cached task group — do not re-group
+- keep: true for pinned, audible, or active tabs — never suggest closing
+- age: whole days since last access (absent when Chrome < 121)`;
 
 /**
  * trimUrlForPrompt(url)
@@ -235,21 +248,42 @@ function buildGrouperPayload(tabs, cachedGroups, now = Date.now()) {
     if (g && typeof g.label === 'string' && g.label) labels.push(g.label);
     for (const u of (g && g.urls) || []) groupedUrls.add(u);
   }
+
+  // Preprocessing: compute structural signals
+  const openerGraph = buildOpenerGraph(tabs);
+  const timeClusters = clusterByTime(tabs, 30);
+
   const payload = tabs.map(t => {
+    const urlType = classifyUrlType(t.url, t.title);
+    const importance = calculateTabImportance(t, openerGraph, timeClusters, tabs);
+    const node = openerGraph.get(t.id);
+
     const entry = {
       id: t.id,
       title: (t.title || '').slice(0, 80),
       url: trimUrlForPrompt(t.url),
+      urlType,
+      importance,
+      openerChain: node.chainDepth,
+      hasDescendants: node.descendants.length > 0,
+      timeCluster: timeClusters.get(t.id),
+      windowId: t.windowId,
+      chromeGroup: null, // ponytail: fetching group titles via chrome.tabGroups adds async complexity; defer to future PR if grouping quality demands it
+      pathDepth: t.url.split('/').filter(Boolean).length - 2, // crude: protocol:// → -2; /a/b/c → 3
     };
+
     if (groupedUrls.has(t.url)) entry.grouped = true;
     if (t.pinned || t.audible || t.active) entry.keep = true;
     if (t.lastAccessed) entry.age = Math.max(0, Math.round((now - t.lastAccessed) / 86400000));
+
     return entry;
   });
+
   const systemPrompt = GROUPER_SYSTEM_PROMPT.replace('{EXISTING_LABELS}',
     labels.length > 0
       ? `- Reuse an existing label when a tab fits it: ${labels.map(l => JSON.stringify(l)).join(', ')}. Create new labels sparingly.\n`
       : '');
+
   return { payload, systemPrompt };
 }
 

@@ -413,5 +413,34 @@ check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url
   check('importance: list page with no children → ephemeral', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'ephemeral');
 }
 
+// ---- ai-grouping: buildGrouperPayload integration test ----
+{
+  const tabs = [
+    {id: 1, url: 'https://github.com/user/repo', title: 'Repo', pinned: false, active: false, audible: false,
+     openerTabId: undefined, windowId: 1, groupId: -1, lastAccessed: Date.now() - 5 * 86400000},
+    {id: 2, url: 'https://google.com/search?q=test', title: 'Search', pinned: false, active: false, audible: false,
+     openerTabId: 1, windowId: 1, groupId: -1, lastAccessed: Date.now() - 1000},
+  ];
+  const { payload, systemPrompt } = ai.buildGrouperPayload(tabs, [], Date.now());
+
+  check('payload: 2 entries', payload.length === 2);
+  check('payload: tab 1 urlType=root', payload[0].urlType === 'root');
+  check('payload: tab 1 importance=core', payload[0].importance === 'core');
+  check('payload: tab 1 openerChain=0', payload[0].openerChain === 0);
+  check('payload: tab 1 has descendants', payload[0].hasDescendants === true);
+  check('payload: tab 1 has timeCluster', typeof payload[0].timeCluster === 'string');
+  check('payload: tab 1 windowId=1', payload[0].windowId === 1);
+  check('payload: tab 1 chromeGroup=null (no native group)', payload[0].chromeGroup === null);
+  check('payload: tab 1 age=5 days', payload[0].age === 5);
+
+  check('payload: tab 2 urlType=search', payload[1].urlType === 'search');
+  check('payload: tab 2 importance=ephemeral', payload[1].importance === 'ephemeral');
+  check('payload: tab 2 openerChain=1', payload[1].openerChain === 1);
+  check('payload: tab 2 no descendants', payload[1].hasDescendants === false);
+
+  check('payload: system prompt mentions urlType', systemPrompt.includes('urlType'));
+  check('payload: system prompt mentions importance', systemPrompt.includes('importance'));
+}
+
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
 console.log('selfcheck OK');
