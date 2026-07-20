@@ -148,6 +148,43 @@ function buildOpenerGraph(tabs) {
 }
 
 /**
+ * clusterByTime(tabs, windowMinutes = 30)
+ *
+ * Groups tabs by temporal proximity — tabs opened/accessed within the same
+ * time window get the same cluster ID. Uses lastAccessed when available,
+ * falls back to id as a proxy for creation order.
+ *
+ * Returns Map<tabId, clusterId> where clusterId is 'tc_000', 'tc_001', etc.
+ */
+function clusterByTime(tabs, windowMinutes = 30) {
+  const clusters = new Map();
+  const windowMs = windowMinutes * 60 * 1000;
+
+  // Sort by lastAccessed or fallback to id (proxy for creation order)
+  const sorted = [...tabs].sort((a, b) => {
+    const aTime = a.lastAccessed || a.id * 1000; // id as fallback timestamp
+    const bTime = b.lastAccessed || b.id * 1000;
+    return aTime - bTime;
+  });
+
+  let clusterIndex = 0;
+  let currentCluster = `tc_${String(clusterIndex).padStart(3, '0')}`;
+  let clusterStartTime = sorted[0]?.lastAccessed || sorted[0]?.id * 1000 || 0;
+
+  for (const tab of sorted) {
+    const tabTime = tab.lastAccessed || tab.id * 1000;
+    if (tabTime - clusterStartTime > windowMs) {
+      clusterIndex++;
+      currentCluster = `tc_${String(clusterIndex).padStart(3, '0')}`;
+      clusterStartTime = tabTime;
+    }
+    clusters.set(tab.id, currentCluster);
+  }
+
+  return clusters;
+}
+
+/**
  * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
  *   → { payload, systemPrompt }
  *

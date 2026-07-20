@@ -64,7 +64,7 @@ check('partition: one fresh member keeps whole group', targets.length === 0);
 
 // ---- ai-grouping: parseGrouperResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, buildOpenerGraph, AI_GROUP_MAX_TABS })');
+  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, buildOpenerGraph, clusterByTime, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -342,6 +342,33 @@ check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url
   const graph = ai.buildOpenerGraph(tabs);
   check('opener: orphan has no ancestors', graph.get(1).ancestors.length === 0);
   check('opener: orphan chainDepth=0', graph.get(1).chainDepth === 0);
+}
+
+// ---- ai-grouping: clusterByTime ----
+{
+  const now = Date.now();
+  const tabs = [
+    {id: 1, lastAccessed: now - 60 * 60 * 1000},        // 1 hour ago
+    {id: 2, lastAccessed: now - 50 * 60 * 1000},        // 50 min ago (same cluster as 1)
+    {id: 3, lastAccessed: now - 10 * 60 * 1000},        // 10 min ago (new cluster)
+    {id: 4, lastAccessed: now - 5 * 60 * 1000},         // 5 min ago (same cluster as 3)
+  ];
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('time: tabs within 30min share cluster', clusters.get(1) === clusters.get(2));
+  check('time: recent tabs clustered together', clusters.get(3) === clusters.get(4));
+  check('time: 40min gap creates new cluster', clusters.get(1) !== clusters.get(3));
+  check('time: cluster ID format tc_NNN', /^tc_\d{3}$/.test(clusters.get(1)));
+}
+
+// Fallback to id when lastAccessed missing
+{
+  const tabs = [
+    {id: 100, lastAccessed: undefined},
+    {id: 200, lastAccessed: undefined},
+  ];
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('time: missing lastAccessed falls back to id', clusters.get(100) !== undefined);
+  check('time: all tabs get a cluster', clusters.get(200) !== undefined);
 }
 
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
