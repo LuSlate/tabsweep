@@ -2006,6 +2006,20 @@ document.addEventListener('input', async (e) => {
 
 
 /* ----------------------------------------------------------------
+   MESSAGE LISTENER — for keyboard shortcuts from background
+   ---------------------------------------------------------------- */
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'trigger-smart-group') {
+    // Simulate clicking the smart-group button
+    const smartGroupBtn = document.querySelector('[data-action="smart-group"]');
+    if (smartGroupBtn) {
+      smartGroupBtn.click();
+    }
+  }
+});
+
+
+/* ----------------------------------------------------------------
    INITIALIZE
    ---------------------------------------------------------------- */
 (async () => {

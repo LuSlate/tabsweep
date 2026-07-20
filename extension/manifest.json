@@ -38,6 +38,27 @@
         "mac": "Command+Shift+K"
       },
       "description": "Open TabSweep in the side panel"
+    },
+    "sweep_stale": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Sweep stale tabs"
+    },
+    "smart_group": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+G",
+        "mac": "Command+Shift+G"
+      },
+      "description": "Smart group tabs with AI"
+    },
+    "save_current": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+D",
+        "mac": "Command+Shift+D"
+      },
+      "description": "Save current tab for later and close"
     }
   },
   "icons": {
