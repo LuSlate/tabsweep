@@ -203,20 +203,26 @@ async function closeDashboardDupes() {
 }
 
 /**
- * groupTabsInChrome()
+ * groupTabsInChrome({ silent } = {})
  *
- * Projects dashboard's domain groups onto Chrome's native tab groups.
+ * Projects dashboard groups — domain groups AND AI task groups (their AI
+ * labels become the native group titles) — onto Chrome's native tab groups.
  * - Skips the landing-pages bucket (mixed domains — a native group would be noise).
  * - Skips tabs already in a native group (never disturbs hand-made groups; idempotent).
- * - Native groups can't span windows, so buckets are per (domain group × window),
+ * - Native groups can't span windows, so buckets are per (group × window),
  *   and only buckets with 2+ tabs become groups.
+ * - A same-titled native group already in the window is reused (new tabs
+ *   join it) instead of spawning a duplicate — matters now that Smart group
+ *   auto-projects after every run.
+ * - silent: suppress the result toast (auto-projection after Smart group
+ *   already toasts the AI outcome).
  */
 
-async function groupTabsInChrome() {
+async function groupTabsInChrome({ silent = false } = {}) {
   let tabsGrouped = 0, groupsMade = 0;
 
   for (const group of domainGroups) {
-    if (group.domain === '__landing-pages__' || group.domain.startsWith('__task-')) continue;
+    if (group.domain === '__landing-pages__') continue;
 
     // Bucket this group's ungrouped tabs by window (native groups are per-window)
     const byWindow = {};
@@ -226,9 +232,15 @@ async function groupTabsInChrome() {
     }
 
     const title = group.label || friendlyDomain(group.domain);
-    for (const tabIds of Object.values(byWindow)) {
-      if (tabIds.length < 2) continue; // grouping one tab is just noise
+    for (const [windowId, tabIds] of Object.entries(byWindow)) {
       try {
+        const [existing] = await chrome.tabGroups.query({ windowId: Number(windowId), title });
+        if (existing) {
+          await chrome.tabs.group({ tabIds, groupId: existing.id });
+          tabsGrouped += tabIds.length;
+          continue;
+        }
+        if (tabIds.length < 2) continue; // starting a group with one tab is just noise
         const groupId = await chrome.tabs.group({ tabIds });
         await chrome.tabGroups.update(groupId, {
           title,
@@ -242,7 +254,8 @@ async function groupTabsInChrome() {
     }
   }
 
-  showToast(groupsMade > 0
+  if (silent) return;
+  showToast(groupsMade > 0 || tabsGrouped > 0
     ? t('toastGrouped', { n: tabsGrouped, m: groupsMade, s: groupsMade !== 1 ? 's' : '' })
     : t('toastNothingGroup'));
 }
@@ -1475,8 +1488,10 @@ document.addEventListener('click', async (e) => {
     }
     actionEl.disabled = true;
     actionEl.textContent = t('grouping');
+    let aiOk = false;
     try {
       const result = await runAiTick(settings, { force: true });
+      aiOk = true;
       const dupeN = result.dupes.reduce((n, c) => n + c.length - 1, 0);
       showToast(t('toastAiTick', { g: result.groups.length, d: dupeN, c: result.close.length }));
       // We just toasted the outcome — don't let the tick notice repeat it
@@ -1487,6 +1502,9 @@ document.addEventListener('click', async (e) => {
       showToast(t('toastSmartFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
+    // Dashboard now holds the fresh AI task groups — mirror them onto the
+    // native tab strip (silent: the AI toast above already reported).
+    if (aiOk) await groupTabsInChrome({ silent: true });
     return;
   }
 
@@ -1499,9 +1517,11 @@ document.addEventListener('click', async (e) => {
     }
     actionEl.disabled = true;
     actionEl.textContent = t('regrouping');
+    let aiOk = false;
     try {
       await chrome.storage.local.remove('aiGroupCache');
       const result = await runAiTick(settings, { force: true });
+      aiOk = true;
       showToast(t('toastRegrouped', { n: result.groups.length }));
       const { lastAiTick } = await chrome.storage.local.get('lastAiTick');
       if (lastAiTick) await chrome.storage.local.set({ lastAiTickSeen: lastAiTick.at });
@@ -1510,6 +1530,7 @@ document.addEventListener('click', async (e) => {
       showToast(t('toastRegroupFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
+    if (aiOk) await groupTabsInChrome({ silent: true });
     return;
   }
 

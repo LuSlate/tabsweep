@@ -80,7 +80,7 @@ zh/en UI with a topbar `#langToggle` (data-action `toggle-lang`); choice persist
 2. Else `aiGroupCache` in storage: URL-keyed AI results mapped onto live tabs via `mapCachedGroupsToTabs` (≥2 live tabs per group).
 3. Else `openerChainClusters`: union-find on `openerTabId`; qualifies only at ≥3 tabs spanning ≥2 hostnames. Session-scoped (`openerTabId` dies on restart).
 
-Native tab group projection ("Group in Chrome" + background auto-group) stays domain-based via `groupTitleForUrl` / `colorForTitle`. Synthetic task domains (`__task-*__`) are skipped by `groupTabsInChrome`.
+Native tab group projection: `groupTabsInChrome` projects domain groups AND AI task groups (AI labels become native group titles), reuses a same-titled native group per window instead of duplicating, and never moves tabs already in a native group. It auto-runs silently after a successful Smart group / Re-group all; background auto-group stays domain-based via `groupTitleForUrl` / `colorForTitle`.
 
 ### Auto-close sweep (`sweep.js` + alarm)
 
