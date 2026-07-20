@@ -48,6 +48,61 @@ function trimUrlForPrompt(url) {
 }
 
 /**
+ * classifyUrlType(url, title)
+ *
+ * Classifies a URL into one of 7 page types based on path structure,
+ * query parameters, and hostname patterns. Used to assign importance
+ * and guide grouping heuristics.
+ *
+ * Returns: 'root' | 'list' | 'detail' | 'doc' | 'code' | 'search' | 'social'
+ */
+function classifyUrlType(url, title) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname;
+    const query = u.search;
+    const host = u.hostname;
+
+    // Search pages
+    if (query.includes('q=') || query.includes('search=') || path.includes('/search')) {
+      return 'search';
+    }
+
+    // Social feeds
+    if (/twitter\.com|x\.com/.test(host) && path === '/home') return 'social';
+    if (/reddit\.com/.test(host) && /^\/(r\/[^/]+)?$/.test(path)) return 'social';
+
+    // Documentation
+    if (/docs?\.|developer\.|learn\.|guide\.|wiki\./.test(host)) return 'doc';
+    if (/mdn|stackoverflow|stackexchange/.test(host)) return 'doc';
+
+    // Code repositories
+    if (/github\.com/.test(host) && /\/blob\/|\/tree\//.test(path)) return 'code';
+    if (/gitlab\.com/.test(host) && /\/-\/blob\//.test(path)) return 'code';
+
+    // GitHub repo root pages (user/repo)
+    if (/github\.com/.test(host) && /^\/[^/]+\/[^/]+\/?$/.test(path)) return 'root';
+
+    // Root/home pages
+    const depth = path.split('/').filter(Boolean).length;
+    if (depth <= 1) return 'root';
+
+    // List pages (issues, PRs, directory listings)
+    if (/\/(issues|pulls|discussions|commits|projects|tags)$/.test(path)) return 'list';
+    if (/\/page\/\d+/.test(path)) return 'list';
+
+    // Detail pages (specific issue, article, file)
+    if (/\/(issues|pull)\/\d+/.test(path)) return 'detail';
+    if (depth >= 3) return 'detail';
+
+    // Default fallback
+    return 'detail';
+  } catch {
+    return 'detail';
+  }
+}
+
+/**
  * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
  *   → { payload, systemPrompt }
  *

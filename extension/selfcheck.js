@@ -64,7 +64,7 @@ check('partition: one fresh member keeps whole group', targets.length === 0);
 
 // ---- ai-grouping: parseGrouperResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, AI_GROUP_MAX_TABS })');
+  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -291,6 +291,20 @@ i18n.setLang('en');
 const enKeys = Object.keys(i18n.I18N.en).sort().join(',');
 const zhKeys = Object.keys(i18n.I18N.zh).sort().join(',');
 check('i18n: en/zh key parity', enKeys === zhKeys);
+
+// ---- classifyUrlType ----
+check('classify: google search → search',    ai.classifyUrlType('https://google.com/search?q=test', '') === 'search');
+check('classify: github repo root → root',    ai.classifyUrlType('https://github.com/user/repo', '') === 'root');
+check('classify: github issues list → list',  ai.classifyUrlType('https://github.com/user/repo/issues', '') === 'list');
+check('classify: github issue detail → detail', ai.classifyUrlType('https://github.com/user/repo/issues/42', '') === 'detail');
+check('classify: github code blob → code',    ai.classifyUrlType('https://github.com/user/repo/blob/main/file.js', '') === 'code');
+check('classify: MDN → doc',                  ai.classifyUrlType('https://developer.mozilla.org/en-US/docs/Web', '') === 'doc');
+check('classify: stackoverflow → doc',        ai.classifyUrlType('https://stackoverflow.com/questions/123', '') === 'doc');
+check('classify: reddit feed → social',       ai.classifyUrlType('https://reddit.com/r/programming', '') === 'social');
+check('classify: x/twitter home → social',    ai.classifyUrlType('https://x.com/home', '') === 'social');
+check('classify: root path → root',           ai.classifyUrlType('https://example.com/', '') === 'root');
+check('classify: deep path → detail',         ai.classifyUrlType('https://example.com/a/b/c/d', '') === 'detail');
+check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url', '') === 'detail');
 
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
 console.log('selfcheck OK');
