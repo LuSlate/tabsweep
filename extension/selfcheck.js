@@ -115,20 +115,33 @@ try { ai.parseGrouperResponse('no json here', ptabs); } catch { threw = true; }
 check('parse: garbage content throws', threw);
 
 // ---- ai-grouping: applyKeepRules ----
+// non-root paths (depth ≥ 2) so these aren't incidentally classified urlType:'root' → core
 const keepTabs = [
   { id: 1, url: 'https://a.com/', pinned: true },
-  { id: 2, url: 'https://b.com/' },
-  { id: 3, url: 'https://c.com/' },
+  { id: 2, url: 'https://b.com/page/detail' },
+  { id: 3, url: 'https://c.com/page/detail' },
 ];
 const kr = ai.applyKeepRules({
   groups: [],
-  dupes: [['https://b.com/', 'https://a.com/', 'https://c.com/']],
-  close: [{ url: 'https://a.com/', reason: 'x' }, { url: 'https://b.com/', reason: 'y' }],
+  dupes: [['https://b.com/page/detail', 'https://a.com/', 'https://c.com/page/detail']],
+  close: [{ url: 'https://a.com/', reason: 'x' }, { url: 'https://b.com/page/detail', reason: 'y' }],
 }, keepTabs);
 check('keep: close filters pinned/active/audible urls',
-  kr.close.length === 1 && kr.close[0].url === 'https://b.com/');
+  kr.close.length === 1 && kr.close[0].url === 'https://b.com/page/detail');
 check('keep: dupe cluster reordered so keep url is first',
   kr.dupes[0][0] === 'https://a.com/');
+
+const coreTabs = [
+  { id: 1, url: 'https://github.com/user/repo', pinned: false, active: false, audible: false },
+  { id: 2, url: 'https://google.com/search?q=old+stuff', pinned: false, active: false, audible: false, lastAccessed: NOW - 30 * DAY },
+];
+const krCore = ai.applyKeepRules({
+  groups: [],
+  dupes: [],
+  close: [{ url: 'https://github.com/user/repo', reason: 'x' }, { url: 'https://google.com/search?q=old+stuff', reason: 'y' }],
+}, coreTabs);
+check('keep: close drops core tab (github repo root), ephemeral survives',
+  krCore.close.length === 1 && krCore.close[0].url === 'https://google.com/search?q=old+stuff');
 
 // ---- ai-grouping: mergeGroupsIntoCache ----
 let mg = ai.mergeGroupsIntoCache(
@@ -159,6 +172,10 @@ check('payload: existing labels listed in prompt', bp.systemPrompt.includes('"Ol
 
 const bpFull = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000);
 check('payload: full mode has no labels line', !bpFull.systemPrompt.includes('Reuse an existing label'));
+
+const bpQuery = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/x?path=/b/c/d' }], [], 1000);
+check('payload: pathDepth counted from pathname, not query-string slashes',
+  bpQuery.payload[0].pathDepth === 1);
 
 check('trimUrl: hash stripped',
   ai.trimUrlForPrompt('https://a.com/p?q=1#frag') === 'https://a.com/p?q=1');

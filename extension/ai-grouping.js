@@ -279,7 +279,7 @@ function buildGrouperPayload(tabs, cachedGroups, now = Date.now()) {
       timeCluster: timeClusters.get(t.id),
       windowId: t.windowId,
       chromeGroup: null, // ponytail: fetching group titles via chrome.tabGroups adds async complexity; defer to future PR if grouping quality demands it
-      pathDepth: t.url.split('/').filter(Boolean).length - 2, // crude: protocol:// → -2; /a/b/c → 3
+      pathDepth: (() => { try { return new URL(t.url).pathname.split('/').filter(Boolean).length; } catch { return 0; } })(),
     };
 
     if (groupedUrls.has(t.url)) entry.grouped = true;
@@ -461,15 +461,26 @@ function parseGrouperResponse(content, tabs) {
 /**
  * applyKeepRules(result, tabs) → same shape as parseGrouperResponse
  *
- * The model is TOLD not to close pinned/audible/active tabs — this is
- * the belt-and-suspenders enforcement: filter them out of close, and
+ * The model is TOLD not to close pinned/audible/active/core tabs — this
+ * is the belt-and-suspenders enforcement: filter them out of close, and
  * when a dupe cluster contains a keep-tab, move its url to the front
- * (the kept copy) so the safe one survives.
+ * (the kept copy) so the safe one survives. Core is recomputed here
+ * (same signals as buildGrouperPayload) so a model that ignores the
+ * prompt's "never suggest core" rule still can't get one through.
  */
 function applyKeepRules(result, tabs) {
   const keepUrls = new Set(
     tabs.filter(t => t.pinned || t.audible || t.active).map(t => t.url));
-  const close = result.close.filter(c => !keepUrls.has(c.url));
+  const urlToTab = new Map();
+  for (const t of tabs) if (!urlToTab.has(t.url)) urlToTab.set(t.url, t);
+  const graph = buildOpenerGraph(tabs);
+  const clusters = clusterByTime(tabs, 30);
+  const close = result.close.filter(c => {
+    if (keepUrls.has(c.url)) return false;
+    const tab = urlToTab.get(c.url);
+    if (tab && calculateTabImportance(tab, graph, clusters, tabs) === 'core') return false;
+    return true;
+  });
   const dupes = result.dupes.map(cluster => {
     const idx = cluster.findIndex(u => keepUrls.has(u));
     if (idx <= 0) return cluster;
