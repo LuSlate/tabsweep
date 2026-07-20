@@ -16,34 +16,44 @@ const AI_GROUP_MAX_TABS = 200; // token guard; overflow falls to domain cards
 const GROUPER_SYSTEM_PROMPT = `You organize browser tabs. Respond with JSON only, no prose:
 {"groups":[{"label":"...","ids":[1,2]}],"dupes":[[3,4]],"close":[{"id":5,"reason":"..."}]}
 
-groups — cluster tabs whose entry lacks "grouped":true into task/topic groups:
-- Every group has at least 2 ids. An id appears in at most one group.
-- Omit tabs that fit nowhere. Never include ids flagged "grouped":true.
+Each tab entry includes preprocessed signals:
+- urlType: root|list|detail|doc|code|search|social (page classification)
+- importance: core|peripheral|ephemeral (core = essential, ephemeral = disposable)
+- openerChain: depth in browsing tree (0 = root, higher = user navigated deeper)
+- hasDescendants: true if this tab opened other tabs
+- timeCluster: tabs with same cluster ID were opened within 30 minutes
+- windowId: Chrome window ID
+- chromeGroup: Chrome native group title (currently always null)
+- pathDepth: URL path segment count
+- age: days since last accessed
+- keep: true for pinned/audible/active (never group or close these)
+- grouped: true if already in a cached group (do not re-group)
+
+groups — cluster semantically related tabs into task/topic groups:
+- Prioritize grouping tabs with:
+  • Same timeCluster (opened together)
+  • Connected via openerChain (parent-child browsing paths)
+  • Same chromeGroup (user signal)
+  • Shared URL path prefix (e.g., github.com/owner/repo/*)
+  • Related semantic content (titles, URL keywords)
+- Every group must have ≥2 ids. An id appears in at most one group.
+- Never include ids flagged "grouped":true or "keep":true.
 - Label: 2-5 words in the dominant language of the group's tab titles.
 {EXISTING_LABELS}
-dupes — clusters of at least 2 ids showing the same content at different URLs
-(mirrors, reposts, a search page vs its result page):
-- First id in each cluster = the copy to keep. An id appears in at most one cluster.
 
-close — tabs worth closing (finished reading, expired events, outdated searches,
-superseded pages):
-- Never suggest ids flagged "keep":true.
-- Use "age" (days since last view) as a signal, not a rule.
-- "reason": at most 8 words, user-facing, in the tab title's language.
-- At most 20 suggestions; empty array when nothing is clearly closable.
+dupes — clusters of ≥2 ids showing the same content at different URLs:
+- Mirrors, reposts, a search page vs its result page.
+- First id in each cluster = the copy to keep.
+- An id appears in at most one cluster.
 
-Per-tab fields you receive:
-- urlType: one of root|list|detail|doc|code|search|social — page class
-- importance: core|peripheral|ephemeral — how critical the tab is
-- openerChain: 0 = no parent in open tabs, >0 = depth from root
-- hasDescendants: true when other open tabs were opened from this one
-- timeCluster: group id for tabs opened near each other in time
-- windowId: which browser window this tab lives in
-- chromeGroup: native Chrome tab group title (if any, else null)
-- pathDepth: number of URL path segments
-- grouped: true when already claimed by a cached task group — do not re-group
-- keep: true for pinned, audible, or active tabs — never suggest closing
-- age: whole days since last access (absent when Chrome < 121)`;
+close — suggest closing tabs with strict protection rules:
+- NEVER suggest ids with importance:"core" or keep:true.
+- Prefer importance:"ephemeral" (search/list/social pages) if age ≥ 7 days.
+- OK to suggest importance:"peripheral" if age ≥ 14 days AND hasDescendants:false.
+- If multiple ids share the same timeCluster, suggest at most 1 from that cluster
+  (preserve task group visibility).
+- "reason": at most 8 words, user-facing, in the tab's language.
+- At most 20 suggestions; empty array when nothing is clearly closable.`;
 
 /**
  * trimUrlForPrompt(url)
