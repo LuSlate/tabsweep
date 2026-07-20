@@ -317,6 +317,9 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
   if (!api) throw new Error('Set an endpoint in ⚙ Settings first');
   const { payload, systemPrompt } = buildGrouperPayload(sorted, cachedGroups);
   const body = JSON.stringify(payload);
+  // Reasoning models spend max_tokens on thinking before any text; too small
+  // → truncated/empty response ("stop: max_tokens"). User-tunable in settings.
+  const maxTokens = Number(settings.maxTokens) > 0 ? Number(settings.maxTokens) : 8192;
 
   const request = api.format === 'anthropic'
     ? {
@@ -329,7 +332,7 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
         },
         body: {
           model: settings.model,
-          max_tokens: 4096,
+          max_tokens: maxTokens,
           temperature: 0,
           system: systemPrompt,
           messages: [{ role: 'user', content: body }],
@@ -342,6 +345,7 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
         },
         body: {
           model: settings.model,
+          max_tokens: maxTokens,
           temperature: 0,
           messages: [
             { role: 'system', content: systemPrompt },

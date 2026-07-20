@@ -496,6 +496,7 @@ const AI_GROUPING_DEFAULTS = {
   endpoint: 'https://api.openai.com/v1/chat/completions',
   apiKey: '',
   model: 'gpt-4o-mini',
+  maxTokens: 8192,   // response cap; reasoning models spend it on thinking first
   auto: false,   // background aiAuto alarm every 30 min (background.js) when enabled
 };
 
@@ -514,6 +515,7 @@ async function populateSettingsPanel() {
   document.getElementById('setAiEndpoint').value       = ai.endpoint;
   document.getElementById('setAiKey').value            = ai.apiKey;
   document.getElementById('setAiModel').value          = ai.model;
+  document.getElementById('setAiMaxTokens').value      = ai.maxTokens;
   document.getElementById('setAiAuto').checked         = ai.auto === true;
   document.getElementById('setAutoCloseEnabled').checked = ac.enabled;
   document.getElementById('setIntervalMin').value      = ac.intervalMin;
@@ -1446,6 +1448,7 @@ document.addEventListener('click', async (e) => {
         endpoint: document.getElementById('setAiEndpoint').value.trim() || AI_GROUPING_DEFAULTS.endpoint,
         apiKey:   document.getElementById('setAiKey').value.trim(),
         model:    document.getElementById('setAiModel').value.trim() || AI_GROUPING_DEFAULTS.model,
+        maxTokens: Math.round(num('setAiMaxTokens', AI_GROUPING_DEFAULTS.maxTokens, 256)),
         auto:     document.getElementById('setAiAuto').checked,
       },
       autoClose: {
