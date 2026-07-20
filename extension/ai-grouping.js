@@ -185,6 +185,39 @@ function clusterByTime(tabs, windowMinutes = 30) {
 }
 
 /**
+ * calculateTabImportance(tab, openerGraph, timeCluster, allTabs)
+ *
+ * Assigns one of three importance levels based on URL type, opener position,
+ * and reference count:
+ * - 'core': essential pages (docs, code, roots, hubs, pinned)
+ * - 'peripheral': middle ground (detail pages with activity)
+ * - 'ephemeral': disposable (search, social, dead-end lists)
+ *
+ * Used by close suggestions: core never suggested, peripheral conservatively,
+ * ephemeral is primary target.
+ */
+function calculateTabImportance(tab, openerGraph, timeCluster, allTabs) {
+  const urlType = classifyUrlType(tab.url, tab.title);
+  const node = openerGraph.get(tab.id);
+
+  // Core: essential pages that anchor tasks
+  if (tab.pinned) return 'core';
+  if (urlType === 'root' || urlType === 'doc' || urlType === 'code') return 'core';
+  if (node.chainDepth === 0 && node.descendants.length > 0) return 'core'; // root of a browsing tree
+
+  // Count how many other tabs directly reference this one as opener parent
+  const referencedBy = allTabs.filter(t => t.openerTabId === tab.id).length;
+  if (referencedBy >= 2) return 'core'; // hub tab
+
+  // Ephemeral: disposable pages
+  if (urlType === 'search' || urlType === 'social') return 'ephemeral';
+  if (urlType === 'list' && node.descendants.length === 0) return 'ephemeral'; // list page that led nowhere
+
+  // Peripheral: middle ground
+  return 'peripheral';
+}
+
+/**
  * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
  *   → { payload, systemPrompt }
  *

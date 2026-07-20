@@ -64,7 +64,7 @@ check('partition: one fresh member keeps whole group', targets.length === 0);
 
 // ---- ai-grouping: parseGrouperResponse ----
 const ai = loadModule('ai-grouping.js',
-  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, buildOpenerGraph, clusterByTime, AI_GROUP_MAX_TABS })');
+  '({ parseGrouperResponse, buildGrouperPayload, applyKeepRules, mergeGroupsIntoCache, trimUrlForPrompt, resolveApiEndpoints, extractResponseText, classifyUrlType, buildOpenerGraph, clusterByTime, calculateTabImportance, AI_GROUP_MAX_TABS })');
 
 const ptabs = [
   { id: 1, url: 'https://github.com/a' },
@@ -369,6 +369,48 @@ check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url
   const clusters = ai.clusterByTime(tabs, 30);
   check('time: missing lastAccessed falls back to id', clusters.get(100) !== undefined);
   check('time: all tabs get a cluster', clusters.get(200) !== undefined);
+}
+
+// ---- ai-grouping: calculateTabImportance ----
+{
+  const tabs = [
+    {id: 1, url: 'https://github.com/user/repo', title: 'Repo', pinned: false, openerTabId: undefined},
+    {id: 2, url: 'https://google.com/search?q=test', title: 'Search', pinned: false, openerTabId: 1},
+    {id: 3, url: 'https://developer.mozilla.org/docs', title: 'MDN', pinned: false, openerTabId: 1},
+    {id: 4, url: 'https://example.com/article', title: 'Article', pinned: true, openerTabId: undefined},
+    {id: 5, url: 'https://reddit.com/r/programming', title: 'Reddit', pinned: false, openerTabId: undefined},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  const clusters = ai.clusterByTime(tabs, 30);
+
+  check('importance: repo root → core', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'core');
+  check('importance: search → ephemeral', ai.calculateTabImportance(tabs[1], graph, clusters, tabs) === 'ephemeral');
+  check('importance: doc → core', ai.calculateTabImportance(tabs[2], graph, clusters, tabs) === 'core');
+  check('importance: pinned → core', ai.calculateTabImportance(tabs[3], graph, clusters, tabs) === 'core');
+  check('importance: social feed → ephemeral', ai.calculateTabImportance(tabs[4], graph, clusters, tabs) === 'ephemeral');
+}
+
+// Hub tab (referenced by multiple tabs)
+{
+  const tabs = [
+    {id: 1, url: 'https://example.com/hub', title: 'Hub', pinned: false, openerTabId: undefined},
+    {id: 2, url: 'https://example.com/a', title: 'A', pinned: false, openerTabId: 1},
+    {id: 3, url: 'https://example.com/b', title: 'B', pinned: false, openerTabId: 1},
+    {id: 4, url: 'https://example.com/c', title: 'C', pinned: false, openerTabId: 1},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('importance: hub with 3 descendants → core', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'core');
+}
+
+// List page with no descendants
+{
+  const tabs = [
+    {id: 1, url: 'https://github.com/user/repo/issues', title: 'Issues', pinned: false, openerTabId: undefined},
+  ];
+  const graph = ai.buildOpenerGraph(tabs);
+  const clusters = ai.clusterByTime(tabs, 30);
+  check('importance: list page with no children → ephemeral', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'ephemeral');
 }
 
 if (failures > 0) { console.error(`${failures} check(s) failed`); process.exit(1); }
