@@ -68,17 +68,59 @@ async function updateBadge() {
   }
 }
 
+// ─── Settings migration ───────────────────────────────────────────────────────
+
+/**
+ * migrateSettings()
+ *
+ * Migrates old settings format (days) to new format (minutes).
+ * Runs once per installation when upgrading from v1.0 to v1.1+.
+ */
+async function migrateSettings() {
+  const { _migrationVersion, autoClose } = await chrome.storage.local.get(['_migrationVersion', 'autoClose']);
+
+  // Already migrated to v2
+  if (_migrationVersion >= 2) return;
+
+  // Check if old format exists
+  if (autoClose && (autoClose.tabStaleDays !== undefined || autoClose.groupStaleDays !== undefined)) {
+    console.log('[TabSweep] Migrating settings: days → minutes');
+
+    const migrated = {
+      ...autoClose,
+      tabStaleMinutes: (autoClose.tabStaleDays || 1) * 1440,
+      groupStaleMinutes: (autoClose.groupStaleDays || 3) * 1440,
+    };
+
+    // Remove old fields
+    delete migrated.tabStaleDays;
+    delete migrated.groupStaleDays;
+
+    await chrome.storage.local.set({
+      autoClose: migrated,
+      _migrationVersion: 2,
+    });
+
+    console.log('[TabSweep] Migration complete:', migrated);
+  } else {
+    // No old settings, just mark as migrated
+    await chrome.storage.local.set({ _migrationVersion: 2 });
+  }
+}
+
 // ─── Event listeners ──────────────────────────────────────────────────────────
 
 // Update badge when the extension is first installed
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
+  await migrateSettings();
   updateBadge();
   setupSweepAlarm();
   setupAiAutoAlarm();
 });
 
 // Update badge when Chrome starts up
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
+  await migrateSettings();
   updateBadge();
   setupSweepAlarm();
   setupAiAutoAlarm();
