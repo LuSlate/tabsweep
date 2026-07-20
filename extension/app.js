@@ -220,6 +220,7 @@ async function closeDashboardDupes() {
 
 async function groupTabsInChrome({ silent = false } = {}) {
   let tabsGrouped = 0, groupsMade = 0;
+  console.log('[tabsweep] groupTabsInChrome: processing', domainGroups.length, 'groups');
 
   for (const group of domainGroups) {
     if (group.domain === '__landing-pages__') continue;
@@ -232,6 +233,7 @@ async function groupTabsInChrome({ silent = false } = {}) {
     }
 
     const title = group.label || friendlyDomain(group.domain);
+    console.log('[tabsweep] group', group.domain, 'title:', title, 'windows:', Object.keys(byWindow).length);
     for (const [windowId, tabIds] of Object.entries(byWindow)) {
       try {
         const [existing] = await chrome.tabGroups.query({ windowId: Number(windowId), title });
@@ -248,12 +250,13 @@ async function groupTabsInChrome({ silent = false } = {}) {
         });
         tabsGrouped += tabIds.length;
         groupsMade++;
-      } catch {
-        // Tab/window vanished mid-flight — skip this bucket, keep going
+      } catch (err) {
+        console.warn('[tabsweep] groupTabsInChrome failed for', title, 'window', windowId, err);
       }
     }
   }
 
+  console.log('[tabsweep] groupTabsInChrome done:', tabsGrouped, 'tabs,', groupsMade, 'new groups');
   await tidyTabStrip();
 
   if (silent) return;
@@ -275,18 +278,25 @@ async function tidyTabStrip() {
   try {
     const groups = await chrome.tabGroups.query({});
     const groupedWindows = new Set(groups.map(g => g.windowId));
+    console.log('[tabsweep] tidyTabStrip:', groups.length, 'groups across', groupedWindows.size, 'windows');
 
     for (const windowId of groupedWindows) {
       const loose = await chrome.tabs.query({ windowId, pinned: false, groupId: -1 });
       const looseIds = loose.map(t => t.id);
-      if (looseIds.length > 0) await chrome.tabs.move(looseIds, { index: -1 });
+      if (looseIds.length > 0) {
+        console.log('[tabsweep] tidyTabStrip: moving', looseIds.length, 'loose tabs to end of window', windowId);
+        await chrome.tabs.move(looseIds, { index: -1 });
+      }
     }
 
     for (const g of groups) {
-      if (!g.collapsed) await chrome.tabGroups.update(g.id, { collapsed: true });
+      if (!g.collapsed) {
+        console.log('[tabsweep] tidyTabStrip: collapsing group', g.id, g.title);
+        await chrome.tabGroups.update(g.id, { collapsed: true });
+      }
     }
-  } catch {
-    // A window/tab vanished mid-tidy — cosmetic pass, never let it break grouping
+  } catch (err) {
+    console.warn('[tabsweep] tidyTabStrip failed:', err);
   }
 }
 
@@ -1534,7 +1544,10 @@ document.addEventListener('click', async (e) => {
     await renderStaticDashboard();
     // Dashboard now holds the fresh AI task groups — mirror them onto the
     // native tab strip (silent: the AI toast above already reported).
-    if (aiOk) await groupTabsInChrome({ silent: true });
+    if (aiOk) {
+      console.log('[tabsweep] smart-group OK, auto-projecting', domainGroups.length, 'groups');
+      await groupTabsInChrome({ silent: true });
+    }
     return;
   }
 
