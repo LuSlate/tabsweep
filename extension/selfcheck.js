@@ -177,6 +177,13 @@ const bpQuery = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com
 check('payload: pathDepth counted from pathname, not query-string slashes',
   bpQuery.payload[0].pathDepth === 1);
 
+const bpZh = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000, 'zh');
+check('payload: labelLang zh pins labels to Simplified Chinese', bpZh.systemPrompt.includes('简体中文'));
+const bpEn = ai.buildGrouperPayload([{ id: 1, title: 't', url: 'https://a.com/' }], [], 1000, 'en');
+check('payload: labelLang en pins labels to English', bpEn.systemPrompt.includes('in English.'));
+check('payload: no labelLang falls back to dominant language',
+  bpFull.systemPrompt.includes('dominant language'));
+
 check('trimUrl: hash stripped',
   ai.trimUrlForPrompt('https://a.com/p?q=1#frag') === 'https://a.com/p?q=1');
 check('trimUrl: long query truncated to 60 chars',

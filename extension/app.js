@@ -254,10 +254,40 @@ async function groupTabsInChrome({ silent = false } = {}) {
     }
   }
 
+  await tidyTabStrip();
+
   if (silent) return;
   showToast(groupsMade > 0 || tabsGrouped > 0
     ? t('toastGrouped', { n: tabsGrouped, m: groupsMade, s: groupsMade !== 1 ? 's' : '' })
     : t('toastNothingGroup'));
+}
+
+/**
+ * tidyTabStrip()
+ *
+ * Post-projection strip cleanup, per window that has native groups:
+ * loose (ungrouped, unpinned) tabs move to the end — groups first, strays
+ * last — then every group collapses so the strip reads as a folder row.
+ * Collapsing the active tab's group makes Chrome refocus a nearby loose
+ * tab; the dashboard tab is loose, so this is a non-issue in practice.
+ */
+async function tidyTabStrip() {
+  try {
+    const groups = await chrome.tabGroups.query({});
+    const groupedWindows = new Set(groups.map(g => g.windowId));
+
+    for (const windowId of groupedWindows) {
+      const loose = await chrome.tabs.query({ windowId, pinned: false, groupId: -1 });
+      const looseIds = loose.map(t => t.id);
+      if (looseIds.length > 0) await chrome.tabs.move(looseIds, { index: -1 });
+    }
+
+    for (const g of groups) {
+      if (!g.collapsed) await chrome.tabGroups.update(g.id, { collapsed: true });
+    }
+  } catch {
+    // A window/tab vanished mid-tidy — cosmetic pass, never let it break grouping
+  }
 }
 
 

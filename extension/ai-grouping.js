@@ -38,7 +38,7 @@ groups — cluster semantically related tabs into task/topic groups:
   • Related semantic content (titles, URL keywords)
 - Every group must have ≥2 ids. An id appears in at most one group.
 - Never include ids flagged "grouped":true or "keep":true.
-- Label: 2-5 words in the dominant language of the group's tab titles.
+- {LABEL_LANG}
 {EXISTING_LABELS}
 
 dupes — clusters of ≥2 ids showing the same content at different URLs:
@@ -241,7 +241,7 @@ function calculateTabImportance(tab, openerGraph, timeCluster, allTabs) {
 }
 
 /**
- * buildGrouperPayload(tabs, cachedGroups, now = Date.now())
+ * buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang)
  *   → { payload, systemPrompt }
  *
  * Builds the per-tab JSON payload and the mode-dependent system prompt.
@@ -250,8 +250,10 @@ function calculateTabImportance(tab, openerGraph, timeCluster, allTabs) {
  * age (whole days since lastAccessed — staleness signal for close).
  * cachedGroups non-empty → incremental mode: existing labels are listed
  * in the prompt so the model reuses them.
+ * labelLang 'zh' | 'en' pins group-label language to the UI language;
+ * unset → labels follow the dominant language of each group's tab titles.
  */
-function buildGrouperPayload(tabs, cachedGroups, now = Date.now()) {
+function buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang) {
   const groupedUrls = new Set();
   const labels = [];
   for (const g of cachedGroups || []) {
@@ -289,10 +291,17 @@ function buildGrouperPayload(tabs, cachedGroups, now = Date.now()) {
     return entry;
   });
 
-  const systemPrompt = GROUPER_SYSTEM_PROMPT.replace('{EXISTING_LABELS}',
-    labels.length > 0
-      ? `- Reuse an existing label when a tab fits it: ${labels.map(l => JSON.stringify(l)).join(', ')}. Create new labels sparingly.\n`
-      : '');
+  const labelLine = labelLang === 'zh'
+    ? 'Label: 2-5 words, in Simplified Chinese (简体中文, never Traditional).'
+    : labelLang === 'en'
+      ? 'Label: 2-5 words, in English.'
+      : "Label: 2-5 words in the dominant language of the group's tab titles.";
+  const systemPrompt = GROUPER_SYSTEM_PROMPT
+    .replace('{LABEL_LANG}', labelLine)
+    .replace('{EXISTING_LABELS}',
+      labels.length > 0
+        ? `- Reuse an existing label when a tab fits it: ${labels.map(l => JSON.stringify(l)).join(', ')}. Create new labels sparingly.\n`
+        : '');
 
   return { payload, systemPrompt };
 }
@@ -315,7 +324,13 @@ async function callCloudGrouper(tabs, settings, cachedGroups = []) {
 
   const api = resolveApiEndpoints(settings.endpoint);
   if (!api) throw new Error('Set an endpoint in ⚙ Settings first');
-  const { payload, systemPrompt } = buildGrouperPayload(sorted, cachedGroups);
+  // Group labels follow the UI language (storage `lang`, unset → browser)
+  let labelLang;
+  try {
+    const { lang } = await chrome.storage.local.get('lang');
+    labelLang = lang || (/^zh/i.test(navigator.language) ? 'zh' : 'en');
+  } catch { /* node/selfcheck context — dominant-language fallback */ }
+  const { payload, systemPrompt } = buildGrouperPayload(sorted, cachedGroups, Date.now(), labelLang);
   const body = JSON.stringify(payload);
   // Reasoning models spend max_tokens on thinking before any text; too small
   // → truncated/empty response ("stop: max_tokens"). User-tunable in settings.
