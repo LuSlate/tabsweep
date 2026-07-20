@@ -203,7 +203,7 @@ async function closeDashboardDupes() {
 }
 
 /**
- * groupTabsInChrome({ silent } = {})
+ * groupTabsInChrome({ silent, ungroupFirst } = {})
  *
  * Projects dashboard groups — domain groups AND AI task groups (their AI
  * labels become the native group titles) — onto Chrome's native tab groups.
@@ -216,9 +216,25 @@ async function closeDashboardDupes() {
  *   auto-projects after every run.
  * - silent: suppress the result toast (auto-projection after Smart group
  *   already toasts the AI outcome).
+ * - ungroupFirst: dissolve all existing native groups before projection — use
+ *   when cached-label language changed (old Traditional Chinese groups block
+ *   new Simplified ones). Pinned tabs stay pinned, just become ungrouped.
  */
 
-async function groupTabsInChrome({ silent = false } = {}) {
+async function groupTabsInChrome({ silent = false, ungroupFirst = false } = {}) {
+  if (ungroupFirst) {
+    console.log('[tabsweep] ungroupFirst: dissolving all native groups');
+    try {
+      const groups = await chrome.tabGroups.query({});
+      for (const g of groups) {
+        await chrome.tabs.ungroup(await chrome.tabs.query({ groupId: g.id }).then(tabs => tabs.map(t => t.id)));
+      }
+      console.log('[tabsweep] ungroupFirst: dissolved', groups.length, 'groups');
+    } catch (err) {
+      console.warn('[tabsweep] ungroupFirst failed:', err);
+    }
+  }
+
   let tabsGrouped = 0, groupsMade = 0;
   console.log('[tabsweep] groupTabsInChrome: processing', domainGroups.length, 'groups');
 
@@ -1546,7 +1562,7 @@ document.addEventListener('click', async (e) => {
     // native tab strip (silent: the AI toast above already reported).
     if (aiOk) {
       console.log('[tabsweep] smart-group OK, auto-projecting', domainGroups.length, 'groups');
-      await groupTabsInChrome({ silent: true });
+      await groupTabsInChrome({ silent: true, ungroupFirst: true });
     }
     return;
   }
@@ -1573,7 +1589,7 @@ document.addEventListener('click', async (e) => {
       showToast(t('toastRegroupFailed', { msg: err.message }));
     }
     await renderStaticDashboard();
-    if (aiOk) await groupTabsInChrome({ silent: true });
+    if (aiOk) await groupTabsInChrome({ silent: true, ungroupFirst: true });
     return;
   }
 
