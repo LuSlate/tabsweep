@@ -1258,6 +1258,44 @@ function renderArchiveItem(item) {
  * 5. Updates footer stats
  * 6. Renders the "Saved for Later" checklist
  */
+/**
+ * migrateSettings()
+ *
+ * Migrates old settings format (days) to new format (minutes).
+ * Runs once per installation when upgrading from v1.0 to v1.1+.
+ */
+async function migrateSettings() {
+  const { _migrationVersion, autoClose } = await chrome.storage.local.get(['_migrationVersion', 'autoClose']);
+
+  // Already migrated to v2
+  if (_migrationVersion >= 2) return;
+
+  // Check if old format exists
+  if (autoClose && (autoClose.tabStaleDays !== undefined || autoClose.groupStaleDays !== undefined)) {
+    console.log('[TabSweep] Migrating settings: days → minutes');
+
+    const migrated = {
+      ...autoClose,
+      tabStaleMinutes: (autoClose.tabStaleDays || 1) * 1440,
+      groupStaleMinutes: (autoClose.groupStaleDays || 3) * 1440,
+    };
+
+    // Remove old fields
+    delete migrated.tabStaleDays;
+    delete migrated.groupStaleDays;
+
+    await chrome.storage.local.set({
+      autoClose: migrated,
+      _migrationVersion: 2,
+    });
+
+    console.log('[TabSweep] Migration complete:', migrated);
+  } else {
+    // No old settings, just mark as migrated
+    await chrome.storage.local.set({ _migrationVersion: 2 });
+  }
+}
+
 async function renderStaticDashboard() {
   // --- Header ---
   const dateEl = document.getElementById('dateDisplay');
@@ -1411,6 +1449,7 @@ async function renderStaticDashboard() {
 }
 
 async function renderDashboard() {
+  await migrateSettings();
   await renderStaticDashboard();
 }
 
@@ -1962,6 +2001,20 @@ document.addEventListener('input', async (e) => {
       || `<div style="font-size:12px;color:var(--muted);padding:8px 0">${t('noResults')}</div>`;
   } catch (err) {
     console.warn('[tabsweep] Archive search failed:', err);
+  }
+});
+
+
+/* ----------------------------------------------------------------
+   MESSAGE LISTENER — for keyboard shortcuts from background
+   ---------------------------------------------------------------- */
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'trigger-smart-group') {
+    // Simulate clicking the smart-group button
+    const smartGroupBtn = document.querySelector('[data-action="smart-group"]');
+    if (smartGroupBtn) {
+      smartGroupBtn.click();
+    }
   }
 });
 

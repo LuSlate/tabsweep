@@ -68,17 +68,59 @@ async function updateBadge() {
   }
 }
 
+// ─── Settings migration ───────────────────────────────────────────────────────
+
+/**
+ * migrateSettings()
+ *
+ * Migrates old settings format (days) to new format (minutes).
+ * Runs once per installation when upgrading from v1.0 to v1.1+.
+ */
+async function migrateSettings() {
+  const { _migrationVersion, autoClose } = await chrome.storage.local.get(['_migrationVersion', 'autoClose']);
+
+  // Already migrated to v2
+  if (_migrationVersion >= 2) return;
+
+  // Check if old format exists
+  if (autoClose && (autoClose.tabStaleDays !== undefined || autoClose.groupStaleDays !== undefined)) {
+    console.log('[TabSweep] Migrating settings: days → minutes');
+
+    const migrated = {
+      ...autoClose,
+      tabStaleMinutes: (autoClose.tabStaleDays || 1) * 1440,
+      groupStaleMinutes: (autoClose.groupStaleDays || 3) * 1440,
+    };
+
+    // Remove old fields
+    delete migrated.tabStaleDays;
+    delete migrated.groupStaleDays;
+
+    await chrome.storage.local.set({
+      autoClose: migrated,
+      _migrationVersion: 2,
+    });
+
+    console.log('[TabSweep] Migration complete:', migrated);
+  } else {
+    // No old settings, just mark as migrated
+    await chrome.storage.local.set({ _migrationVersion: 2 });
+  }
+}
+
 // ─── Event listeners ──────────────────────────────────────────────────────────
 
 // Update badge when the extension is first installed
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
+  await migrateSettings();
   updateBadge();
   setupSweepAlarm();
   setupAiAutoAlarm();
 });
 
 // Update badge when Chrome starts up
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
+  await migrateSettings();
   updateBadge();
   setupSweepAlarm();
   setupAiAutoAlarm();
@@ -104,16 +146,83 @@ chrome.tabs.onUpdated.addListener(() => {
 // Run once immediately when the service worker first loads
 updateBadge();
 
-// ─── Open the side panel on keyboard command ──────────────────────────────────
-// sidePanel.open() MUST run synchronously in the command callback: the user-gesture
-// flag only survives ~1ms (crbug.com/1478648), so any `await` before it drops the
-// gesture and Chrome throws "may only be called in response to a user gesture".
-// onCommand hands us the active tab directly, so no async window lookup is needed.
-// ponytail: open-only for v1; a true open/close toggle needs open-state tracking.
-chrome.commands.onCommand.addListener((command, tab) => {
-  if (command !== 'open_side_panel' || !tab) return;
-  chrome.sidePanel.open({ windowId: tab.windowId })
-    .catch(e => console.error('[TabSweep] sidePanel.open failed:', e));
+// ─── Keyboard commands ────────────────────────────────────────────────────────
+chrome.commands.onCommand.addListener(async (command, tab) => {
+  // Open side panel (synchronous — must not await before calling)
+  if (command === 'open_side_panel' && tab) {
+    chrome.sidePanel.open({ windowId: tab.windowId })
+      .catch(e => console.error('[TabSweep] sidePanel.open failed:', e));
+    return;
+  }
+
+  // Sweep stale tabs
+  if (command === 'sweep_stale') {
+    try {
+      const { autoClose } = await chrome.storage.local.get('autoClose');
+      const cfg = { ...AUTO_CLOSE_DEFAULTS, ...(autoClose || {}) };
+
+      const tabs = await chrome.tabs.query({});
+      const realTabs = tabs.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
+
+      const targets = partitionSweepTargets(realTabs, {
+        tabStaleMs: cfg.tabStaleMinutes * 60 * 1000,
+        groupStaleMs: cfg.groupStaleMinutes * 60 * 1000,
+      });
+
+      if (targets.length === 0) return;
+
+      await archiveAndClose(targets);
+      await chrome.action.setBadgeText({ text: '✓' });
+      await chrome.action.setBadgeBackgroundColor({ color: '#3d7a4a' });
+      setTimeout(() => updateBadge(), 2000);
+    } catch (err) {
+      console.error('[TabSweep] sweep_stale command failed:', err);
+    }
+    return;
+  }
+
+  // Smart group (send message to dashboard if open)
+  if (command === 'smart_group') {
+    try {
+      const dashboardTabs = await chrome.tabs.query({ url: `chrome-extension://${chrome.runtime.id}/index.html*` });
+      if (dashboardTabs.length > 0) {
+        await chrome.tabs.sendMessage(dashboardTabs[0].id, { action: 'trigger-smart-group' });
+      }
+    } catch (err) {
+      console.error('[TabSweep] smart_group command failed:', err);
+    }
+    return;
+  }
+
+  // Save current tab for later and close
+  if (command === 'save_current' && tab) {
+    try {
+      if (!tab.url || !/^https?:/.test(tab.url)) return;
+
+      const { deferred = [] } = await chrome.storage.local.get('deferred');
+      const knownUrls = new Set(deferred.map(d => d.url));
+
+      if (!knownUrls.has(tab.url)) {
+        deferred.push({
+          id: `${Date.now()}-0`,
+          url: tab.url,
+          title: tab.title || tab.url,
+          savedAt: new Date().toISOString(),
+          completed: false,
+          dismissed: false,
+        });
+        await chrome.storage.local.set({ deferred });
+      }
+
+      await chrome.tabs.remove(tab.id);
+      await chrome.action.setBadgeText({ text: '💾' });
+      await chrome.action.setBadgeBackgroundColor({ color: '#6495ed' });
+      setTimeout(() => updateBadge(), 2000);
+    } catch (err) {
+      console.error('[TabSweep] save_current command failed:', err);
+    }
+    return;
+  }
 });
 
 // ─── Auto-grouping ────────────────────────────────────────────────────────────

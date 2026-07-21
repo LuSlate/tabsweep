@@ -39,6 +39,12 @@ groups — cluster semantically related tabs into task/topic groups:
 - Every group must have ≥2 ids. An id appears in at most one group.
 - Never include ids flagged "grouped":true or "keep":true.
 - {LABEL_LANG}
+- **Label quality requirements:**
+  • MUST be specific: include tech stack, product name, or topic (e.g., "React Hooks 文档学习", "GitHub PR review - tabsweep")
+  • AVOID generic words: "相关", "工作", "学习", "资料", "任务", "项目", "开发", "related", "work", "study"
+  • Good examples: "Claude API 集成调试", "Vue3 响应式原理研究", "AWS Lambda 部署配置"
+  • Bad examples: "开发相关", "工作", "学习资料", "项目文档"
+  • If tabs span multiple domains with no clear semantic link, do NOT force a generic group
 {EXISTING_LABELS}
 
 dupes — clusters of ≥2 ids showing the same content at different URLs:
@@ -171,6 +177,38 @@ function buildOpenerGraph(tabs) {
 }
 
 /**
+ * calculateDynamicTimeWindow(tabs)
+ *
+ * Calculates adaptive time clustering window based on tab density.
+ * High activity (>10 tabs/hr) → tighter 15min window
+ * Medium (3-10 tabs/hr) → standard 30min window
+ * Low (<3 tabs/hr) → relaxed 60min window
+ *
+ * Returns window size in minutes.
+ */
+function calculateDynamicTimeWindow(tabs) {
+  if (tabs.length < 2) return 30; // Default for tiny sets
+
+  const now = Date.now();
+  const fourHoursAgo = now - (4 * 60 * 60 * 1000);
+
+  // Count tabs opened/accessed in last 4 hours
+  const recentTabs = tabs.filter(t => {
+    const tabTime = t.lastAccessed || t.id * 1000;
+    return tabTime > fourHoursAgo;
+  });
+
+  if (recentTabs.length === 0) return 60; // No recent activity, use wide window
+
+  const hoursElapsed = 4;
+  const tabsPerHour = recentTabs.length / hoursElapsed;
+
+  if (tabsPerHour > 10) return 15;  // High density
+  if (tabsPerHour > 3) return 30;   // Medium density
+  return 60;                         // Low density
+}
+
+/**
  * clusterByTime(tabs, windowMinutes = 30)
  *
  * Groups tabs by temporal proximity — tabs opened/accessed within the same
@@ -261,9 +299,10 @@ function buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang) {
     for (const u of (g && g.urls) || []) groupedUrls.add(u);
   }
 
-  // Preprocessing: compute structural signals
+  // Preprocessing: compute structural signals with dynamic time window
   const openerGraph = buildOpenerGraph(tabs);
-  const timeClusters = clusterByTime(tabs, 30);
+  const dynamicWindow = calculateDynamicTimeWindow(tabs);
+  const timeClusters = clusterByTime(tabs, dynamicWindow);
 
   const payload = tabs.map(t => {
     const urlType = classifyUrlType(t.url, t.title);
