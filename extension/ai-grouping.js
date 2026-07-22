@@ -13,9 +13,6 @@
 
 const AI_GROUP_MAX_TABS = 200; // token guard; overflow falls to domain cards
 
-// ponytail: global lock; per-caller granularity if throughput matters
-let _aiTickRunning = false;
-
 const GROUPER_SYSTEM_PROMPT = `You organize browser tabs. Respond with JSON only, no prose:
 {"groups":[{"label":"...","ids":[1,2]}],"dupes":[[3,4]],"close":[{"id":5,"reason":"..."}]}
 
@@ -704,6 +701,12 @@ async function probeChatEndpoint(settings) {
  * the last tick — idle browsers don't burn tokens. Throws on missing
  * apiKey or API failure; the background caller catches and warns.
  *
+ * Cross-context mutex via the Web Locks API: dashboard pages and the MV3
+ * service worker share one 'aiTick' lock (same extension origin), so a
+ * manual click and the background alarm can't clobber each other's writes.
+ * force (manual) waits its turn then always runs; auto (background) skips
+ * with null when a tick is already in flight.
+ *
  * Storage written per successful tick:
  *   aiGroupCache       { groups, dupes, ts }   — merged incremental groups
  *   aiSweepSuggestions { items, ts }           — close suggestions (replaced)
@@ -713,13 +716,12 @@ async function probeChatEndpoint(settings) {
 async function runAiTick(settings, { force = false } = {}) {
   if (!settings || !settings.apiKey) throw new Error('Set an API key in ⚙ Settings first');
 
-  if (_aiTickRunning) {
-    console.log('[tabsweep] AI tick already running, skipping');
-    return null;
-  }
-  _aiTickRunning = true;
+  return navigator.locks.request('aiTick', { ifAvailable: !force }, async (lock) => {
+    if (!lock) {
+      console.log('[tabsweep] AI tick already running, skipping');
+      return null;
+    }
 
-  try {
     const all = await chrome.tabs.query({});
     const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
 
@@ -743,7 +745,5 @@ async function runAiTick(settings, { force = false } = {}) {
       lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
     });
     return { groups: merged, dupes: result.dupes, close: result.close };
-  } finally {
-    _aiTickRunning = false;
-  }
+  });
 }

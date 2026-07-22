@@ -580,15 +580,10 @@ function removeChipRow(chip, { withConfetti = false, cleanupEmptyGroup = false }
   chip.style.opacity    = '0';
   chip.style.transform  = 'scale(0.8)';
   setTimeout(() => {
+    const grp = cleanupEmptyGroup ? chip.closest('.group') : null;
     chip.remove();
-    if (cleanupEmptyGroup) {
-      const viaEmpty = document.querySelector('.group:has(.grows:empty)');
-      if (viaEmpty) animateCardOut(viaEmpty);
-      document.querySelectorAll('.group').forEach(c => {
-        if (c.querySelectorAll('.trow[data-action="focus-tab"]').length === 0) {
-          animateCardOut(c);
-        }
-      });
+    if (grp && !grp.querySelector('.trow[data-action="focus-tab"]')) {
+      animateCardOut(grp);
     }
   }, 200);
 }
@@ -828,6 +823,7 @@ function getRealTabs() {
 // (renderStaticDashboard).
 let currentStaleMs = DAY_MS;
 let currentGroupStaleMs = AUTO_CLOSE_DEFAULTS.groupStaleMinutes * MINUTE_MS;
+let staleTabIds = new Set();
 
 /**
  * sweepStaleTabs()
@@ -1091,7 +1087,7 @@ function renderGroupSection(group, startNum) {
     } catch {}
     const count      = urlCounts[tab.url];
     const dupeTag    = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const staleClass = isStaleTab(tab, currentStaleMs) ? ' stale' : '';
+    const staleClass = staleTabIds.has(tab.id) ? ' stale' : '';
     const safeUrl    = (tab.url || '').replace(/"/g, '&quot;');
     const safeTitle  = label.replace(/"/g, '&quot;');
     let domain = '';
@@ -1267,7 +1263,7 @@ function renderDeferredItem(item) {
     <div class="deferred-item" data-deferred-id="${item.id}">
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
-        <a href="${encodeURI(item.url)}" target="_blank" rel="noopener" class="deferred-title" title="${escapeHtml(item.title || '')}">
+        <a href="${(item.url || '').replace(/"/g, '&quot;')}" target="_blank" rel="noopener" class="deferred-title" title="${escapeHtml(item.title || '')}">
           <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${escapeHtml(item.title || item.url)}
         </a>
         <div class="deferred-meta">
@@ -1290,7 +1286,7 @@ function renderArchiveItem(item) {
   const ago = item.completedAt ? timeAgo(item.completedAt) : timeAgo(item.savedAt);
   return `
     <div class="archive-item">
-      <a href="${encodeURI(item.url)}" target="_blank" rel="noopener" class="archive-item-title" title="${escapeHtml(item.title || '')}">
+      <a href="${(item.url || '').replace(/"/g, '&quot;')}" target="_blank" rel="noopener" class="archive-item-title" title="${escapeHtml(item.title || '')}">
         ${escapeHtml(item.title || item.url)}
       </a>
       <span class="archive-item-date">${ago}</span>
@@ -1462,6 +1458,8 @@ async function renderStaticDashboard() {
 
   // --- Render AI sweep band + domain groups (sweep band takes the first numbers) ---
   const { aiSweepSuggestions } = await chrome.storage.local.get('aiSweepSuggestions');
+  const staleTargets = partitionSweepTargets(realTabs, { tabStaleMs: currentStaleMs, groupStaleMs: currentGroupStaleMs });
+  staleTabIds = new Set(staleTargets.map(t => t.id));
   const groupsEl = document.getElementById('openTabsGroups');
   if (groupsEl && domainGroups.length > 0) {
     const sweep = renderAiSweepSection(aiSweepSuggestions && aiSweepSuggestions.items, realTabs, 0);
@@ -1476,7 +1474,7 @@ async function renderStaticDashboard() {
   }
 
   // --- Command bar ---
-  const staleN   = partitionSweepTargets(realTabs, { tabStaleMs: currentStaleMs, groupStaleMs: currentGroupStaleMs }).length;
+  const staleN   = staleTargets.length;
   const dashDupeN = openTabs.filter(t => t.isDashboard).length;
   const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
   const aiDupeN = mapCachedDupesToTabs(realTabs, aiGroupCache && aiGroupCache.dupes)
@@ -1732,7 +1730,8 @@ document.addEventListener('click', async (e) => {
     if (!tabUrl) return;
 
     // Close the tab in Chrome directly
-    const match = openTabs.find(t => t.url === tabUrl);
+    const allTabs = await chrome.tabs.query({});
+    const match = allTabs.find(t => t.url === tabUrl);
     if (match) {
       try { await chrome.tabs.remove(match.id); }
       catch (err) { console.error('[tabsweep] close-single-tab: tabs.remove failed:', err); }
@@ -1771,7 +1770,8 @@ document.addEventListener('click', async (e) => {
     }
 
     // Close the tab in Chrome
-    const match = openTabs.find(t => t.url === tabUrl);
+    const allTabs = await chrome.tabs.query({});
+    const match = allTabs.find(t => t.url === tabUrl);
     if (match) {
       try { await chrome.tabs.remove(match.id); }
       catch (err) { console.error('[tabsweep] defer-single-tab: tabs.remove failed:', err); }
@@ -1850,7 +1850,6 @@ document.addEventListener('click', async (e) => {
 
     if (card) {
       playCloseSound();
-      animateCardOut(card);
     }
 
     const groupLabel = group.domain === '__landing-pages__' ? t('homepages') : (group.label || friendlyDomain(group.domain));
@@ -1858,7 +1857,8 @@ document.addEventListener('click', async (e) => {
 
     // ponytail: full re-render instead of domainGroups.splice — avoids race with
     // renderStaticDashboard replacing the array reference while this handler awaits
-    await renderStaticDashboard();
+    try { await renderStaticDashboard(); }
+    catch (err) { console.error('[tabsweep] close-group: re-render failed:', err); }
     return;
   }
 
@@ -1876,14 +1876,14 @@ document.addEventListener('click', async (e) => {
 
     if (card) {
       playCloseSound();
-      animateCardOut(card);
     }
 
     showToast(t('toastStashed', { n: closedCount, s: closedCount !== 1 ? 's' : '', name }));
 
     // ponytail: full re-render instead of domainGroups.splice — avoids race with
     // renderStaticDashboard replacing the array reference while this handler awaits
-    await renderStaticDashboard();
+    try { await renderStaticDashboard(); }
+    catch (err) { console.error('[tabsweep] stash-group: re-render failed:', err); }
     return;
   }
 

@@ -115,11 +115,9 @@ async function archiveAndClose(tabs) {
   const knownUrls = new Set(deferred.map(d => d.url));
   const stamp = Date.now().toString();
   let i = 0;
-  const toClose = [];
   for (const tab of tabs) {
     if (!tab.url || knownUrls.has(tab.url)) continue;
     knownUrls.add(tab.url);
-    toClose.push(tab);
     deferred.push({
       id:        `${stamp}-${i++}`, // unique within the batch
       url:       tab.url,
@@ -139,12 +137,16 @@ async function archiveAndClose(tabs) {
     }
     return 0;
   }
-  if (toClose.length > 0) {
+  // Close every passed tab, not just ones newly archived — a tab whose URL
+  // was already in the archive (or duplicated within this batch) is still
+  // safe to close, since the archive-before-close invariant already holds.
+  const ids = tabs.map(t => t.id).filter(id => id != null);
+  if (ids.length > 0) {
     try {
-      await chrome.tabs.remove(toClose.map(t => t.id));
+      await chrome.tabs.remove(ids);
     } catch (err) {
       console.error('[tabsweep] archiveAndClose: tabs.remove failed:', err);
     }
   }
-  return toClose.length;
+  return ids.length;
 }

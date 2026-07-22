@@ -245,36 +245,39 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
 // landing pages (groupTitleForUrl returns null for those).
 
 let autoGroup = true; // default ON; only an explicit stored `false` disables
-chrome.storage.local.get('autoGroup').then(v => {
+// Registered synchronously (MV3 requires listeners attach in the service
+// worker's first turn) and awaits the stored value before consulting the
+// flag, so onUpdated never acts on the initial `true` when storage says
+// `false`.
+const autoGroupReady = chrome.storage.local.get('autoGroup').then(v => {
   autoGroup = v.autoGroup !== false;
-  // Register listener only after the stored value is known so onUpdated never
-  // sees the initial `true` when storage says `false`.
-  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (!autoGroup || changeInfo.status !== 'complete') return;
-    if (!tab.url || !/^https?:/.test(tab.url)) return;
-    if (tab.pinned || tab.groupId !== -1) return;
+});
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  await autoGroupReady; // storage value known before the flag is consulted
+  if (!autoGroup || changeInfo.status !== 'complete') return;
+  if (!tab.url || !/^https?:/.test(tab.url)) return;
+  if (tab.pinned || tab.groupId !== -1) return;
 
-    const title = groupTitleForUrl(tab.url);
-    if (!title) return;
+  const title = groupTitleForUrl(tab.url);
+  if (!title) return;
 
-    try {
-      // Join an existing group with the same name in this window
-      const [existing] = await chrome.tabGroups.query({ windowId: tab.windowId, title });
-      if (existing) {
-        await chrome.tabs.group({ tabIds: [tab.id], groupId: existing.id });
-        return;
-      }
-
-      // Otherwise form a new group once 2+ ungrouped tabs share the title
-      const winTabs = await chrome.tabs.query({ windowId: tab.windowId, pinned: false, groupId: -1 });
-      const mates = winTabs.filter(t => t.url && /^https?:/.test(t.url) && groupTitleForUrl(t.url) === title);
-      if (mates.length < 2) return;
-      const groupId = await chrome.tabs.group({ tabIds: mates.map(t => t.id) });
-      await chrome.tabGroups.update(groupId, { title, color: colorForTitle(title) });
-    } catch (err) {
-      console.debug('[tabsweep] auto-group failed:', err);
+  try {
+    // Join an existing group with the same name in this window
+    const [existing] = await chrome.tabGroups.query({ windowId: tab.windowId, title });
+    if (existing) {
+      await chrome.tabs.group({ tabIds: [tab.id], groupId: existing.id });
+      return;
     }
-  });
+
+    // Otherwise form a new group once 2+ ungrouped tabs share the title
+    const winTabs = await chrome.tabs.query({ windowId: tab.windowId, pinned: false, groupId: -1 });
+    const mates = winTabs.filter(t => t.url && /^https?:/.test(t.url) && groupTitleForUrl(t.url) === title);
+    if (mates.length < 2) return;
+    const groupId = await chrome.tabs.group({ tabIds: mates.map(t => t.id) });
+    await chrome.tabGroups.update(groupId, { title, color: colorForTitle(title) });
+  } catch (err) {
+    console.debug('[tabsweep] auto-group failed:', err);
+  }
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
