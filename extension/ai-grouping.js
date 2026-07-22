@@ -13,6 +13,9 @@
 
 const AI_GROUP_MAX_TABS = 200; // token guard; overflow falls to domain cards
 
+// ponytail: global lock; per-caller granularity if throughput matters
+let _aiTickRunning = false;
+
 const GROUPER_SYSTEM_PROMPT = `You organize browser tabs. Respond with JSON only, no prose:
 {"groups":[{"label":"...","ids":[1,2]}],"dupes":[[3,4]],"close":[{"id":5,"reason":"..."}]}
 
@@ -698,27 +701,37 @@ async function probeChatEndpoint(settings) {
 async function runAiTick(settings, { force = false } = {}) {
   if (!settings || !settings.apiKey) throw new Error('Set an API key in ⚙ Settings first');
 
-  const all = await chrome.tabs.query({});
-  const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
-
-  const sig = tabs.map(t => t.url).sort().join('\n');
-  if (!force) {
-    const { lastAiSig } = await chrome.storage.local.get('lastAiSig');
-    if (lastAiSig === sig) return null;
+  if (_aiTickRunning) {
+    console.log('[tabsweep] AI tick already running, skipping');
+    return null;
   }
+  _aiTickRunning = true;
 
-  const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
-  const cachedGroups = aiGroupCache && Array.isArray(aiGroupCache.groups) ? aiGroupCache.groups : [];
-  const result = await callCloudGrouper(tabs, settings, cachedGroups);
-  const merged = mergeGroupsIntoCache(cachedGroups, result.groups);
-  const dupeExtras = result.dupes.reduce((n, c) => n + c.length - 1, 0);
-  const now = Date.now();
+  try {
+    const all = await chrome.tabs.query({});
+    const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
 
-  await chrome.storage.local.set({
-    aiGroupCache: { groups: merged, dupes: result.dupes, ts: now },
-    aiSweepSuggestions: { items: result.close, ts: now },
-    lastAiSig: sig,
-    lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
-  });
-  return { groups: merged, dupes: result.dupes, close: result.close };
+    const sig = tabs.map(t => t.url).sort().join('\n');
+    if (!force) {
+      const { lastAiSig } = await chrome.storage.local.get('lastAiSig');
+      if (lastAiSig === sig) return null;
+    }
+
+    const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+    const cachedGroups = aiGroupCache && Array.isArray(aiGroupCache.groups) ? aiGroupCache.groups : [];
+    const result = await callCloudGrouper(tabs, settings, cachedGroups);
+    const merged = mergeGroupsIntoCache(cachedGroups, result.groups);
+    const dupeExtras = result.dupes.reduce((n, c) => n + c.length - 1, 0);
+    const now = Date.now();
+
+    await chrome.storage.local.set({
+      aiGroupCache: { groups: merged, dupes: result.dupes, ts: now },
+      aiSweepSuggestions: { items: result.close, ts: now },
+      lastAiSig: sig,
+      lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
+    });
+    return { groups: merged, dupes: result.dupes, close: result.close };
+  } finally {
+    _aiTickRunning = false;
+  }
 }

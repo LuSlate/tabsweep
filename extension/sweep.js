@@ -106,6 +106,10 @@ async function archiveAndClose(tabs) {
     });
   }
   await chrome.storage.local.set({ deferred });
-  await chrome.tabs.remove(tabs.map(t => t.id));
+  try {
+    await chrome.tabs.remove(tabs.map(t => t.id));
+  } catch (err) {
+    console.error('[tabsweep] archiveAndClose: tabs.remove failed:', err);
+  }
   return tabs.length;
 }

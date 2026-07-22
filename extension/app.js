@@ -95,7 +95,10 @@ async function closeTabsByUrls(urls) {
     })
     .map(tab => tab.id);
 
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeTabsByUrls: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -110,7 +113,10 @@ async function closeTabsExact(urls) {
   const urlSet = new Set(urls);
   const allTabs = await chrome.tabs.query({});
   const toClose = allTabs.filter(t => urlSet.has(t.url)).map(t => t.id);
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeTabsExact: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -170,7 +176,10 @@ async function closeDuplicateTabs(urls, keepOne = true) {
     }
   }
 
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeDuplicateTabs: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -198,7 +207,10 @@ async function closeDashboardDupes() {
     dashboardTabs.find(t => t.active) ||
     dashboardTabs[0];
   const toClose = dashboardTabs.filter(t => t.id !== keep.id).map(t => t.id);
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeDashboardDupes: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -781,6 +793,7 @@ function getRealTabs() {
 // swapped for the autoClose setting once settings load
 // (renderStaticDashboard).
 let currentStaleMs = DAY_MS;
+let currentGroupStaleMs = AUTO_CLOSE_DEFAULTS.groupStaleMinutes * MINUTE_MS;
 
 /**
  * sweepStaleTabs()
@@ -790,7 +803,7 @@ let currentStaleMs = DAY_MS;
  * then closes them.
  */
 async function sweepStaleTabs() {
-  const staleTabs = getRealTabs().filter(t => isStaleTab(t, currentStaleMs));
+  const staleTabs = partitionSweepTargets(getRealTabs(), { tabStaleMs: currentStaleMs, groupStaleMs: currentGroupStaleMs });
   if (staleTabs.length === 0) return;
 
   await archiveAndClose(staleTabs);
@@ -1047,7 +1060,7 @@ function renderGroupSection(group, startNum) {
     return `<div class="trow clickable${staleClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
       <span class="tnum">${String(num).padStart(3, '0')}</span>
       ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
-      <span class="chip-text">${label}</span>${dupeTag}
+      <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
         <button class="chip-action" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${t('saveTabTitle')}">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
@@ -1214,8 +1227,8 @@ function renderDeferredItem(item) {
     <div class="deferred-item" data-deferred-id="${item.id}">
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
-        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-          <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${item.title || item.url}
+        <a href="${encodeURI(item.url)}" target="_blank" rel="noopener" class="deferred-title" title="${escapeHtml(item.title || '')}">
+          <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${escapeHtml(item.title || item.url)}
         </a>
         <div class="deferred-meta">
           <span>${domain}</span>
@@ -1237,8 +1250,8 @@ function renderArchiveItem(item) {
   const ago = item.completedAt ? timeAgo(item.completedAt) : timeAgo(item.savedAt);
   return `
     <div class="archive-item">
-      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-        ${item.title || item.url}
+      <a href="${encodeURI(item.url)}" target="_blank" rel="noopener" class="archive-item-title" title="${escapeHtml(item.title || '')}">
+        ${escapeHtml(item.title || item.url)}
       </a>
       <span class="archive-item-date">${ago}</span>
     </div>`;
@@ -1313,6 +1326,7 @@ async function renderStaticDashboard() {
   // shared by the banner, the chip dimming, and the background alarm)
   const autoCloseCfg = await getAutoCloseSettings();
   currentStaleMs = autoCloseCfg.tabStaleMinutes * 60 * 1000;
+  currentGroupStaleMs = autoCloseCfg.groupStaleMinutes * 60 * 1000;
 
   // Auto-grouping flag (absent = on) — drives the "Auto" toggle in the header
   const { autoGroup: autoGroupOn = true } = await chrome.storage.local.get('autoGroup');
@@ -1418,7 +1432,7 @@ async function renderStaticDashboard() {
   }
 
   // --- Command bar ---
-  const staleN   = realTabs.filter(t => isStaleTab(t, currentStaleMs)).length;
+  const staleN   = partitionSweepTargets(realTabs, { tabStaleMs: currentStaleMs, groupStaleMs: currentGroupStaleMs }).length;
   const dashDupeN = openTabs.filter(t => t.isDashboard).length;
   const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
   const aiDupeN = mapCachedDupesToTabs(realTabs, aiGroupCache && aiGroupCache.dupes)
@@ -1572,6 +1586,7 @@ document.addEventListener('click', async (e) => {
     showToast(t('toastSettingsSaved'));
     const ac = await getAutoCloseSettings();
     currentStaleMs = ac.tabStaleMinutes * 60 * 1000;
+    currentGroupStaleMs = ac.groupStaleMinutes * 60 * 1000;
     renderStaticDashboard(); // refresh the command bar with new stale threshold
     return;
   }
@@ -1668,7 +1683,10 @@ document.addEventListener('click', async (e) => {
     // Close the tab in Chrome directly
     const allTabs = await chrome.tabs.query({});
     const match   = allTabs.find(t => t.url === tabUrl);
-    if (match) await chrome.tabs.remove(match.id);
+    if (match) {
+      try { await chrome.tabs.remove(match.id); }
+      catch (err) { console.error('[tabsweep] close-single-tab: tabs.remove failed:', err); }
+    }
     await fetchOpenTabs();
 
     playCloseSound();
@@ -1721,7 +1739,10 @@ document.addEventListener('click', async (e) => {
     // Close the tab in Chrome
     const allTabs = await chrome.tabs.query({});
     const match   = allTabs.find(t => t.url === tabUrl);
-    if (match) await chrome.tabs.remove(match.id);
+    if (match) {
+      try { await chrome.tabs.remove(match.id); }
+      catch (err) { console.error('[tabsweep] defer-single-tab: tabs.remove failed:', err); }
+    }
     await fetchOpenTabs();
 
     // Animate chip out
