@@ -249,7 +249,7 @@ function clusterByTime(tabs, windowMinutes = 30) {
 }
 
 /**
- * calculateTabImportance(tab, openerGraph, timeCluster, allTabs)
+ * calculateTabImportance(tab, openerGraph, allTabs)
  *
  * Assigns one of three importance levels based on URL type, opener position,
  * and reference count:
@@ -259,8 +259,13 @@ function clusterByTime(tabs, windowMinutes = 30) {
  *
  * Used by close suggestions: core never suggested, peripheral conservatively,
  * ephemeral is primary target.
+ *
+ * ponytail: timeCluster is not factored into importance scoring; the current
+ * URL-type / opener-graph classification is sufficient. If close suggestions
+ * miss stale ephemeral tabs in active time clusters, add timeCluster here and
+ * downgrade tabs that fall in a "recent activity" cluster.
  */
-function calculateTabImportance(tab, openerGraph, timeCluster, allTabs) {
+function calculateTabImportance(tab, openerGraph, allTabs) {
   const urlType = classifyUrlType(tab.url, tab.title);
   const node = openerGraph.get(tab.id);
 
@@ -309,7 +314,7 @@ function buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang) {
 
   const payload = tabs.map(t => {
     const urlType = classifyUrlType(t.url, t.title);
-    const importance = calculateTabImportance(t, openerGraph, timeClusters, tabs);
+    const importance = calculateTabImportance(t, openerGraph, tabs);
     const node = openerGraph.get(t.id);
 
     const entry = {
@@ -463,14 +468,17 @@ function extractResponseText(format, data) {
  */
 function parseGrouperResponse(content, tabs) {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
-  const match = text.match(/\{[\s\S]*\}/); // tolerate ```json fences
+  const match = text.match(/\{[\s\S]*}/); // tolerate ```json fences, greedy to match full nested JSON
   if (!match) throw new Error('No JSON in model response');
   let parsed;
   try { parsed = JSON.parse(match[0]); }
   catch { throw new Error('Invalid JSON in model response'); }
 
   const urlById = new Map(tabs.map(t => [t.id, t.url]));
-  const coerceId = raw => typeof raw === 'string' ? parseInt(raw, 10) : raw;
+  const coerceId = raw => {
+    const id = typeof raw === 'string' ? parseInt(raw, 10) : raw;
+    return Number.isNaN(id) ? undefined : id;
+  };
 
   const claimed = new Set();
   const groups = [];
@@ -528,6 +536,11 @@ function parseGrouperResponse(content, tabs) {
  * (the kept copy) so the safe one survives. Core is recomputed here
  * (same signals as buildGrouperPayload) so a model that ignores the
  * prompt's "never suggest core" rule still can't get one through.
+ *
+ * ponytail: buildOpenerGraph and calculateTabImportance are recomputed here
+ * independently of buildGrouperPayload's own call. O(n) on capped 200-tab
+ * sets, negligible. If this becomes a bottleneck, pass precomputed graph
+ * and importance map through instead of rebuilding.
  */
 function applyKeepRules(result, tabs) {
   const keepUrls = new Set(
@@ -535,11 +548,10 @@ function applyKeepRules(result, tabs) {
   const urlToTab = new Map();
   for (const t of tabs) if (!urlToTab.has(t.url)) urlToTab.set(t.url, t);
   const graph = buildOpenerGraph(tabs);
-  const clusters = clusterByTime(tabs, 30);
   const close = result.close.filter(c => {
     if (keepUrls.has(c.url)) return false;
     const tab = urlToTab.get(c.url);
-    if (tab && calculateTabImportance(tab, graph, clusters, tabs) === 'core') return false;
+    if (tab && calculateTabImportance(tab, graph, tabs) === 'core') return false;
     return true;
   });
   const dupes = result.dupes.map(cluster => {

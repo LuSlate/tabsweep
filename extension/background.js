@@ -75,6 +75,9 @@ async function updateBadge() {
  *
  * Migrates old settings format (days) to new format (minutes).
  * Runs once per installation when upgrading from v1.0 to v1.1+.
+ *
+ * This is the canonical migrator — runs first via onInstalled.
+ * app.js has a fallback copy that yields when this one already ran.
  */
 async function migrateSettings() {
   const { _migrationVersion, autoClose } = await chrome.storage.local.get(['_migrationVersion', 'autoClose']);
@@ -114,16 +117,16 @@ async function migrateSettings() {
 chrome.runtime.onInstalled.addListener(async () => {
   await migrateSettings();
   updateBadge();
-  setupSweepAlarm();
-  setupAiAutoAlarm();
+  await setupSweepAlarm();
+  await setupAiAutoAlarm();
 });
 
 // Update badge when Chrome starts up
 chrome.runtime.onStartup.addListener(async () => {
   await migrateSettings();
   updateBadge();
-  setupSweepAlarm();
-  setupAiAutoAlarm();
+  await setupSweepAlarm();
+  await setupAiAutoAlarm();
 });
 
 // Update badge whenever a tab is opened
@@ -136,8 +139,9 @@ chrome.tabs.onRemoved.addListener(() => {
   updateBadge();
 });
 
-// Update badge when a tab's URL changes (e.g. navigating to/from chrome://)
-chrome.tabs.onUpdated.addListener(() => {
+// Update badge when a tab finishes loading (URL settled — navigating to/from chrome://)
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.status && changeInfo.status !== 'complete') return;
   updateBadge();
 });
 
@@ -147,6 +151,8 @@ chrome.tabs.onUpdated.addListener(() => {
 updateBadge();
 
 // ─── Keyboard commands ────────────────────────────────────────────────────────
+let saveCurrentLock = false;
+
 chrome.commands.onCommand.addListener(async (command, tab) => {
   // Open side panel (synchronous — must not await before calling)
   if (command === 'open_side_panel' && tab) {
@@ -196,15 +202,20 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
 
   // Save current tab for later and close
   if (command === 'save_current' && tab) {
+    if (saveCurrentLock) return;
+    saveCurrentLock = true;
     try {
       if (!tab.url || !/^https?:/.test(tab.url)) return;
 
+      // ponytail: read-modify-write race on 'deferred' — this service-worker
+      // write can interleave with dashboard reads/writes, silently dropping
+      // a user action. chrome.storage.local has no atomic CAS (M4 debt).
       const { deferred = [] } = await chrome.storage.local.get('deferred');
       const knownUrls = new Set(deferred.map(d => d.url));
 
       if (!knownUrls.has(tab.url)) {
         deferred.push({
-          id: `${Date.now()}-0`,
+          id: Date.now().toString() + '-0',
           url: tab.url,
           title: tab.title || tab.url,
           savedAt: new Date().toISOString(),
@@ -220,6 +231,8 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
       setTimeout(() => updateBadge(), 2000);
     } catch (err) {
       console.error('[TabSweep] save_current command failed:', err);
+    } finally {
+      saveCurrentLock = false;
     }
     return;
   }
@@ -232,7 +245,37 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
 // landing pages (groupTitleForUrl returns null for those).
 
 let autoGroup = true; // default ON; only an explicit stored `false` disables
-chrome.storage.local.get('autoGroup').then(v => { autoGroup = v.autoGroup !== false; });
+chrome.storage.local.get('autoGroup').then(v => {
+  autoGroup = v.autoGroup !== false;
+  // Register listener only after the stored value is known so onUpdated never
+  // sees the initial `true` when storage says `false`.
+  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (!autoGroup || changeInfo.status !== 'complete') return;
+    if (!tab.url || !/^https?:/.test(tab.url)) return;
+    if (tab.pinned || tab.groupId !== -1) return;
+
+    const title = groupTitleForUrl(tab.url);
+    if (!title) return;
+
+    try {
+      // Join an existing group with the same name in this window
+      const [existing] = await chrome.tabGroups.query({ windowId: tab.windowId, title });
+      if (existing) {
+        await chrome.tabs.group({ tabIds: [tab.id], groupId: existing.id });
+        return;
+      }
+
+      // Otherwise form a new group once 2+ ungrouped tabs share the title
+      const winTabs = await chrome.tabs.query({ windowId: tab.windowId, pinned: false, groupId: -1 });
+      const mates = winTabs.filter(t => t.url && /^https?:/.test(t.url) && groupTitleForUrl(t.url) === title);
+      if (mates.length < 2) return;
+      const groupId = await chrome.tabs.group({ tabIds: mates.map(t => t.id) });
+      await chrome.tabGroups.update(groupId, { title, color: colorForTitle(title) });
+    } catch (err) {
+      console.debug('[tabsweep] auto-group failed:', err);
+    }
+  });
+});
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if ('autoGroup' in changes) {
@@ -243,33 +286,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if ('aiGrouping' in changes) {
     setupAiAutoAlarm(); // auto flag or key changed → rebuild the AI alarm
-  }
-});
-
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (!autoGroup || changeInfo.status !== 'complete') return;
-  if (!tab.url || !/^https?:/.test(tab.url)) return;
-  if (tab.pinned || tab.groupId !== -1) return;
-
-  const title = groupTitleForUrl(tab.url);
-  if (!title) return;
-
-  try {
-    // Join an existing group with the same name in this window
-    const [existing] = await chrome.tabGroups.query({ windowId: tab.windowId, title });
-    if (existing) {
-      await chrome.tabs.group({ tabIds: [tab.id], groupId: existing.id });
-      return;
-    }
-
-    // Otherwise form a new group once 2+ ungrouped tabs share the title
-    const winTabs = await chrome.tabs.query({ windowId: tab.windowId, pinned: false, groupId: -1 });
-    const mates = winTabs.filter(t => t.url && /^https?:/.test(t.url) && groupTitleForUrl(t.url) === title);
-    if (mates.length < 2) return;
-    const groupId = await chrome.tabs.group({ tabIds: mates.map(t => t.id) });
-    await chrome.tabGroups.update(groupId, { title, color: colorForTitle(title) });
-  } catch {
-    // Tab/window vanished mid-flight — fine, the next load retries naturally
   }
 });
 

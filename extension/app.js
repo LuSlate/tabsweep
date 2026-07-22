@@ -359,9 +359,12 @@ async function tidyTabStrip() {
  * @param {{ url: string, title: string }} tab
  */
 async function saveTabForLater(tab) {
+  // ponytail: read-modify-write race — background alarm sweep (archiveAndClose)
+  // can interleave between this get and set, silently dropping the user's save.
+  // chrome.storage.local has no atomic CAS; fix via single-writer arch (M4 debt).
   const { deferred = [] } = await chrome.storage.local.get('deferred');
   deferred.push({
-    id:        Date.now().toString(),
+    id:        Date.now().toString() + '-0',
     url:       tab.url,
     title:     tab.title,
     savedAt:   new Date().toISOString(),
@@ -393,6 +396,7 @@ async function getSavedTabs() {
  * Marks a saved tab as completed (checked off). It moves to the archive.
  */
 async function checkOffSavedTab(id) {
+  // ponytail: same read-modify-write race as saveTabForLater (M4 debt).
   const { deferred = [] } = await chrome.storage.local.get('deferred');
   const tab = deferred.find(t => t.id === id);
   if (tab) {
@@ -408,6 +412,7 @@ async function checkOffSavedTab(id) {
  * Marks a saved tab as dismissed (removed from all lists).
  */
 async function dismissSavedTab(id) {
+  // ponytail: same read-modify-write race as saveTabForLater (M4 debt).
   const { deferred = [] } = await chrome.storage.local.get('deferred');
   const tab = deferred.find(t => t.id === id);
   if (tab) {
@@ -557,6 +562,35 @@ function animateCardOut(card) {
     card.remove();
     checkAndShowEmptyState();
   }, 300);
+}
+
+/**
+ * removeChipRow(chip, { withConfetti, cleanupEmptyGroup })
+ *
+ * Animates a .trow chip out (fade + scale), optionally with confetti at the
+ * chip position and empty-group cleanup after removal.
+ */
+function removeChipRow(chip, { withConfetti = false, cleanupEmptyGroup = false } = {}) {
+  if (!chip) return;
+  if (withConfetti) {
+    const rect = chip.getBoundingClientRect();
+    shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  }
+  chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
+  chip.style.opacity    = '0';
+  chip.style.transform  = 'scale(0.8)';
+  setTimeout(() => {
+    chip.remove();
+    if (cleanupEmptyGroup) {
+      const viaEmpty = document.querySelector('.group:has(.grows:empty)');
+      if (viaEmpty) animateCardOut(viaEmpty);
+      document.querySelectorAll('.group').forEach(c => {
+        if (c.querySelectorAll('.trow[data-action="focus-tab"]').length === 0) {
+          animateCardOut(c);
+        }
+      });
+    }
+  }, 200);
 }
 
 /**
@@ -851,6 +885,9 @@ async function stashGroup(group) {
     ? t('homepages')
     : (group.label || friendlyDomain(group.domain));
 
+  // ponytail: read-modify-write race on 'workspaces' — dashboard-only so
+  // cross-surface interleaving (service worker) is not a concern, but a second
+  // rapid stash/restore/delete in another dashboard instance could race.
   const workspaces = await getWorkspaces();
   workspaces.push({
     id:      Date.now().toString(),
@@ -879,6 +916,9 @@ async function stashGroup(group) {
  * then removes the workspace.
  */
 async function restoreWorkspace(id) {
+  // ponytail: read-modify-write race on 'workspaces' — snapshot taken before
+  // the tab-create loop; a concurrent stash/delete can clobber. Dashboard-only
+  // (no service worker), but multiple dashboard instances can interleave (M4 debt).
   const workspaces = await getWorkspaces();
   const ws = workspaces.find(w => w.id === id);
   if (!ws) return;
@@ -1278,12 +1318,16 @@ function renderArchiveItem(item) {
  *
  * Migrates old settings format (days) to new format (minutes).
  * Runs once per installation when upgrading from v1.0 to v1.1+.
+ *
+ * Background.js is the canonical migrator (runs first via onInstalled).
+ * This copy exists only as a fallback for the window where the service
+ * worker hasn't started yet; it yields when background.js already ran.
  */
 async function migrateSettings() {
   const { _migrationVersion, autoClose } = await chrome.storage.local.get(['_migrationVersion', 'autoClose']);
 
-  // Already migrated to v2
-  if (_migrationVersion >= 2) return;
+  // Background.js (canonical migrator) already ran — nothing to do.
+  if (_migrationVersion !== undefined) return;
 
   // Check if old format exists
   if (autoClose && (autoClose.tabStaleDays !== undefined || autoClose.groupStaleDays !== undefined)) {
@@ -1444,6 +1488,10 @@ async function renderStaticDashboard() {
   if (statTabs) statTabs.textContent = openTabs.length;
 
   // --- Auto-sweep notice (written by the background alarm, Task 6) ---
+  // ponytail: read-then-write race — if a second sweep fires between get and set,
+  // the new timestamp is lost and its toast is never shown. Impact: missed toast
+  // only (no data loss); CAS would need chrome.storage.session mutex or atomic
+  // compare-and-swap not available here. Add if missed toasts become user-visible.
   const { lastSweep, lastSweepSeen } = await chrome.storage.local.get(['lastSweep', 'lastSweepSeen']);
   if (lastSweep && lastSweep.at && lastSweep.at !== lastSweepSeen) {
     showToast(t('toastAutoSwept', { n: lastSweep.count, s: lastSweep.count !== 1 ? 's' : '' }));
@@ -1451,6 +1499,7 @@ async function renderStaticDashboard() {
   }
 
   // --- AI tick notice (written by runAiTick; shown once) ---
+  // ponytail: same read-then-write race as above (toast only, no data loss).
   const { lastAiTick, lastAiTickSeen } = await chrome.storage.local.get(['lastAiTick', 'lastAiTickSeen']);
   if (lastAiTick && lastAiTick.at && lastAiTick.at !== lastAiTickSeen) {
     showToast(t('toastAiTick', { g: lastAiTick.groups, d: lastAiTick.dupes, c: lastAiTick.close }));
@@ -1484,6 +1533,8 @@ document.addEventListener('click', async (e) => {
   if (!actionEl) return;
 
   const action = actionEl.dataset.action;
+
+  try {
 
   // ---- Close duplicate dashboard tabs ----
   if (action === 'close-dashboard-dupes') {
@@ -1681,8 +1732,7 @@ document.addEventListener('click', async (e) => {
     if (!tabUrl) return;
 
     // Close the tab in Chrome directly
-    const allTabs = await chrome.tabs.query({});
-    const match   = allTabs.find(t => t.url === tabUrl);
+    const match = openTabs.find(t => t.url === tabUrl);
     if (match) {
       try { await chrome.tabs.remove(match.id); }
       catch (err) { console.error('[tabsweep] close-single-tab: tabs.remove failed:', err); }
@@ -1691,25 +1741,9 @@ document.addEventListener('click', async (e) => {
 
     playCloseSound();
 
-    // Animate the chip row out
     const chip = actionEl.closest('.trow');
     if (chip) {
-      const rect = chip.getBoundingClientRect();
-      shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
-      chip.style.opacity    = '0';
-      chip.style.transform  = 'scale(0.8)';
-      setTimeout(() => {
-        chip.remove();
-        // If the group now has no rows, remove it too
-        const parentGroup = document.querySelector('.group:has(.grows:empty)');
-        if (parentGroup) animateCardOut(parentGroup);
-        document.querySelectorAll('.group').forEach(c => {
-          if (c.querySelectorAll('.trow[data-action="focus-tab"]').length === 0) {
-            animateCardOut(c);
-          }
-        });
-      }, 200);
+      removeChipRow(chip, { withConfetti: true, cleanupEmptyGroup: true });
     }
 
     // Update footer
@@ -1737,8 +1771,7 @@ document.addEventListener('click', async (e) => {
     }
 
     // Close the tab in Chrome
-    const allTabs = await chrome.tabs.query({});
-    const match   = allTabs.find(t => t.url === tabUrl);
+    const match = openTabs.find(t => t.url === tabUrl);
     if (match) {
       try { await chrome.tabs.remove(match.id); }
       catch (err) { console.error('[tabsweep] defer-single-tab: tabs.remove failed:', err); }
@@ -1748,10 +1781,7 @@ document.addEventListener('click', async (e) => {
     // Animate chip out
     const chip = actionEl.closest('.trow');
     if (chip) {
-      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
-      chip.style.opacity    = '0';
-      chip.style.transform  = 'scale(0.8)';
-      setTimeout(() => chip.remove(), 200);
+      removeChipRow(chip, { cleanupEmptyGroup: true });
     }
 
     showToast(t('toastDeferred'));
@@ -1823,15 +1853,12 @@ document.addEventListener('click', async (e) => {
       animateCardOut(card);
     }
 
-    // Remove from in-memory groups
-    const idx = domainGroups.indexOf(group);
-    if (idx !== -1) domainGroups.splice(idx, 1);
-
     const groupLabel = group.domain === '__landing-pages__' ? t('homepages') : (group.label || friendlyDomain(group.domain));
     showToast(t('toastClosedFrom', { n: urls.length, s: urls.length !== 1 ? 's' : '', label: groupLabel }));
 
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
+    // ponytail: full re-render instead of domainGroups.splice — avoids race with
+    // renderStaticDashboard replacing the array reference while this handler awaits
+    await renderStaticDashboard();
     return;
   }
 
@@ -1852,15 +1879,11 @@ document.addEventListener('click', async (e) => {
       animateCardOut(card);
     }
 
-    const idx = domainGroups.indexOf(group);
-    if (idx !== -1) domainGroups.splice(idx, 1);
-
     showToast(t('toastStashed', { n: closedCount, s: closedCount !== 1 ? 's' : '', name }));
 
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
-
-    await renderWorkspaces();
+    // ponytail: full re-render instead of domainGroups.splice — avoids race with
+    // renderStaticDashboard replacing the array reference while this handler awaits
+    await renderStaticDashboard();
     return;
   }
 
@@ -1982,6 +2005,12 @@ document.addEventListener('click', async (e) => {
 
     showToast(t('toastAllClosed'));
     return;
+  }
+
+  } catch (err) {
+    console.error('[tabsweep] action', action, 'failed:', err);
+    showToast(t('toastActionFailed'));
+    renderStaticDashboard();
   }
 });
 

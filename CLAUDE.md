@@ -112,11 +112,12 @@ Native tab group projection: `groupTabsInChrome` projects domain groups AND AI t
 
 | Key | Purpose |
 |-----|---------|
+| `_migrationVersion` | Schema migration marker (set to 2 after stale-minutes conversion) |
 | `deferred` | Saved-for-later + archive (`completed` flag) |
 | `workspaces` | Stashed group snapshots |
 | `autoGroup` | Background domain auto-group (default on; only explicit `false` disables) |
-| `autoClose` | Sweep schedule + thresholds |
-| `aiGrouping` | Endpoint / key / model / auto flag |
+| `autoClose` | Sweep schedule + thresholds (`enabled`, `intervalMin`, `tabStaleMinutes`, `groupStaleMinutes`, `sweepTime`) |
+| `aiGrouping` | Endpoint / key / model / auto flag / maxTokens (response cap, default 8192) |
 | `aiGroupCache` | Last tick groups + dupes |
 | `aiSweepSuggestions` | AI close suggestions awaiting review |
 | `lastAiSig` | Tab-URL signature (AI tick change detection) |
