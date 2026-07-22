@@ -90,6 +90,7 @@ const I18N = {
     toastSmartFailed: 'Smart group failed: {msg}',
     toastRegrouped: 'Re-grouped into {n} tasks',
     toastRegroupFailed: 'Re-group failed: {msg}',
+    toastActionFailed: 'Something went wrong — try reloading the page',
     toastTabClosed: 'Tab closed',
     toastSaveFailed: 'Failed to save tab',
     toastDeferred: 'Saved for later',
@@ -104,6 +105,7 @@ const I18N = {
     toastAutoGroupOff: 'Auto-grouping off',
     toastGrouped: 'Grouped {n} tabs into {m} group{s}',
     toastNothingGroup: 'Nothing to group',
+    toastStorageFull: 'Archive storage full — sweep paused. Clear old archive entries.',
     youtubeVideo: 'YouTube Video',
     grouping: '⏳ Grouping…',
     regrouping: '⏳ Re-grouping…',
@@ -180,6 +182,7 @@ const I18N = {
     toastSmartFailed: '智能分组失败：{msg}',
     toastRegrouped: '已重新分为 {n} 个任务组',
     toastRegroupFailed: '重新分组失败：{msg}',
+    toastActionFailed: '操作失败 — 请刷新页面重试',
     toastTabClosed: '标签已关闭',
     toastSaveFailed: '保存标签失败',
     toastDeferred: '已存入稍后阅读',
@@ -194,6 +197,7 @@ const I18N = {
     toastAutoGroupOff: '自动分组已关闭',
     toastGrouped: '已将 {n} 个标签分为 {m} 组',
     toastNothingGroup: '没有可分组的标签',
+    toastStorageFull: '归档存储已满 — 清扫暂停。请清理旧归档条目。',
     youtubeVideo: 'YouTube 视频',
     grouping: '⏳ 分组中…',
     regrouping: '⏳ 重新分组中…',
@@ -221,7 +225,11 @@ function currentLang() { return _lang; }
 function t(key, vars) {
   const dict = I18N[_lang] || I18N.en;
   let s = dict[key] != null ? dict[key] : (I18N.en[key] != null ? I18N.en[key] : key);
-  if (vars) for (const k of Object.keys(vars)) s = s.split('{' + k + '}').join(String(vars[k]));
+  // ponytail: iterative split/join allows cascading re-substitution if any
+  // substitution value contains {another_key}. No current caller does, but
+  // a single-pass regex replace (e.g. s.replace(/\{(\w+)\}/g, ...)) would fix it
+  // if caller-controlled values are ever used.
+  if (vars) for (const k of Object.keys(vars)) s = s.split('{' + k + '}').join(vars[k] != null ? String(vars[k]) : '');
   return s;
 }
 

@@ -38,7 +38,7 @@ check('stale: active tab is never stale',        sweep.isStaleTab({ ...base, act
 check('stale: pinned tab is never stale',        sweep.isStaleTab({ ...base, pinned: true }, DAY, NOW) === false);
 check('stale: audible tab is never stale',       sweep.isStaleTab({ ...base, audible: true }, DAY, NOW) === false);
 check('stale: dashboard page is never stale',      sweep.isStaleTab({ ...base, isDashboard: true }, DAY, NOW) === false);
-check('stale: missing lastAccessed never stale', sweep.isStaleTab({ ...base, lastAccessed: undefined }, DAY, NOW) === false);
+check('stale: missing lastAccessed never stale', !sweep.isStaleTab({ ...base, lastAccessed: undefined }, DAY, NOW));
 check('stale: fresh tab is not stale',           sweep.isStaleTab({ ...base, lastAccessed: NOW - 1000 }, DAY, NOW) === false);
 
 // ---- partitionSweepTargets ----
@@ -405,13 +405,12 @@ check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url
     {id: 5, url: 'https://reddit.com/r/programming', title: 'Reddit', pinned: false, openerTabId: undefined},
   ];
   const graph = ai.buildOpenerGraph(tabs);
-  const clusters = ai.clusterByTime(tabs, 30);
 
-  check('importance: repo root → core', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'core');
-  check('importance: search → ephemeral', ai.calculateTabImportance(tabs[1], graph, clusters, tabs) === 'ephemeral');
-  check('importance: doc → core', ai.calculateTabImportance(tabs[2], graph, clusters, tabs) === 'core');
-  check('importance: pinned → core', ai.calculateTabImportance(tabs[3], graph, clusters, tabs) === 'core');
-  check('importance: social feed → ephemeral', ai.calculateTabImportance(tabs[4], graph, clusters, tabs) === 'ephemeral');
+  check('importance: repo root → core', ai.calculateTabImportance(tabs[0], graph, tabs) === 'core');
+  check('importance: search → ephemeral', ai.calculateTabImportance(tabs[1], graph, tabs) === 'ephemeral');
+  check('importance: doc → core', ai.calculateTabImportance(tabs[2], graph, tabs) === 'core');
+  check('importance: pinned → core', ai.calculateTabImportance(tabs[3], graph, tabs) === 'core');
+  check('importance: social feed → ephemeral', ai.calculateTabImportance(tabs[4], graph, tabs) === 'ephemeral');
 }
 
 // Hub tab (referenced by multiple tabs)
@@ -423,8 +422,7 @@ check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url
     {id: 4, url: 'https://example.com/c', title: 'C', pinned: false, openerTabId: 1},
   ];
   const graph = ai.buildOpenerGraph(tabs);
-  const clusters = ai.clusterByTime(tabs, 30);
-  check('importance: hub with 3 descendants → core', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'core');
+  check('importance: hub with 3 descendants → core', ai.calculateTabImportance(tabs[0], graph, tabs) === 'core');
 }
 
 // List page with no descendants
@@ -433,8 +431,7 @@ check('classify: malformed → detail fallback', ai.classifyUrlType('invalid-url
     {id: 1, url: 'https://github.com/user/repo/issues', title: 'Issues', pinned: false, openerTabId: undefined},
   ];
   const graph = ai.buildOpenerGraph(tabs);
-  const clusters = ai.clusterByTime(tabs, 30);
-  check('importance: list page with no children → ephemeral', ai.calculateTabImportance(tabs[0], graph, clusters, tabs) === 'ephemeral');
+  check('importance: list page with no children → ephemeral', ai.calculateTabImportance(tabs[0], graph, tabs) === 'ephemeral');
 }
 
 // ---- ai-grouping: buildGrouperPayload integration test ----

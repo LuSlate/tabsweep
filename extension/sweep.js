@@ -16,6 +16,10 @@ const AUTO_CLOSE_DEFAULTS = { enabled: true, intervalMin: 60, tabStaleMinutes: 1
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 
+// ponytail: soft cap on completed archive entries — prevents unbounded
+// chrome.storage.local growth. Oldest-first pruning keeps the newest 2000.
+const MAX_COMPLETED_ARCHIVE = 2000;
+
 /**
  * nextSweepTime(hhmm)
  *   → ms epoch of the next occurrence of clock time 'HH:MM' (today if it
@@ -41,7 +45,7 @@ function nextSweepTime(hhmm) {
  * silently disappears there). `now` is injectable for tests.
  */
 function isStaleTab(tab, staleMs, now) {
-  return !!(
+  return (
     !tab.active &&
     !tab.pinned &&
     !tab.isDashboard &&
@@ -64,7 +68,7 @@ function partitionSweepTargets(tabs, { tabStaleMs, groupStaleMs, now }) {
   const targets = [];
   const byGroup = new Map();
   for (const tab of tabs) {
-    if (tab.groupId == null || tab.groupId === -1) {
+    if (tab.groupId == null || Number(tab.groupId) === -1) {
       if (isStaleTab(tab, tabStaleMs, now)) targets.push(tab);
     } else {
       if (!byGroup.has(tab.groupId)) byGroup.set(tab.groupId, []);
@@ -88,8 +92,26 @@ function partitionSweepTargets(tabs, { tabStaleMs, groupStaleMs, now }) {
  * reuses the exact same loss-free path.
  */
 async function archiveAndClose(tabs) {
+  // ponytail: read-modify-write race on 'deferred' — called from both
+  // dashboard (manual sweep banner) and background (alarm). Can interleave
+  // with saveTabForLater/checkOffSavedTab/dismissSavedTab, dropping a write.
+  // chrome.storage.local has no atomic CAS; fix via single-writer arch (M4 debt).
   if (!tabs || tabs.length === 0) return 0;
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  let { deferred = [] } = await chrome.storage.local.get('deferred');
+
+  // ponytail: soft cap completed entries — prune oldest-first when over the limit.
+  // Prevents unbounded archive growth that could exhaust chrome.storage.local quota.
+  const completed = deferred.filter(d => d.completed);
+  if (completed.length > MAX_COMPLETED_ARCHIVE) {
+    const newestIds = new Set(
+      completed
+        .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
+        .slice(0, MAX_COMPLETED_ARCHIVE)
+        .map(d => d.id)
+    );
+    deferred = deferred.filter(d => !d.completed || newestIds.has(d.id));
+  }
+
   const knownUrls = new Set(deferred.map(d => d.url));
   const stamp = Date.now().toString();
   let i = 0;
@@ -101,11 +123,30 @@ async function archiveAndClose(tabs) {
       url:       tab.url,
       title:     tab.title || tab.url,
       savedAt:   new Date().toISOString(),
-      completed: true,              // straight to the archive
+      completedAt: new Date().toISOString(),
+      completed:   true,              // straight to the archive
       dismissed: false,
     });
   }
-  await chrome.storage.local.set({ deferred });
-  await chrome.tabs.remove(tabs.map(t => t.id));
-  return tabs.length;
+  try {
+    await chrome.storage.local.set({ deferred });
+  } catch (err) {
+    console.error('[tabsweep] archiveAndClose: storage write failed — quota likely exceeded', err);
+    if (typeof window !== 'undefined' && window.t && window.showToast) {
+      window.showToast(window.t('toastStorageFull') || 'Archive storage full — sweep paused.');
+    }
+    return 0;
+  }
+  // Close every passed tab, not just ones newly archived — a tab whose URL
+  // was already in the archive (or duplicated within this batch) is still
+  // safe to close, since the archive-before-close invariant already holds.
+  const ids = tabs.map(t => t.id).filter(id => id != null);
+  if (ids.length > 0) {
+    try {
+      await chrome.tabs.remove(ids);
+    } catch (err) {
+      console.error('[tabsweep] archiveAndClose: tabs.remove failed:', err);
+    }
+  }
+  return ids.length;
 }

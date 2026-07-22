@@ -246,7 +246,7 @@ function clusterByTime(tabs, windowMinutes = 30) {
 }
 
 /**
- * calculateTabImportance(tab, openerGraph, timeCluster, allTabs)
+ * calculateTabImportance(tab, openerGraph, allTabs)
  *
  * Assigns one of three importance levels based on URL type, opener position,
  * and reference count:
@@ -256,8 +256,13 @@ function clusterByTime(tabs, windowMinutes = 30) {
  *
  * Used by close suggestions: core never suggested, peripheral conservatively,
  * ephemeral is primary target.
+ *
+ * ponytail: timeCluster is not factored into importance scoring; the current
+ * URL-type / opener-graph classification is sufficient. If close suggestions
+ * miss stale ephemeral tabs in active time clusters, add timeCluster here and
+ * downgrade tabs that fall in a "recent activity" cluster.
  */
-function calculateTabImportance(tab, openerGraph, timeCluster, allTabs) {
+function calculateTabImportance(tab, openerGraph, allTabs) {
   const urlType = classifyUrlType(tab.url, tab.title);
   const node = openerGraph.get(tab.id);
 
@@ -306,7 +311,7 @@ function buildGrouperPayload(tabs, cachedGroups, now = Date.now(), labelLang) {
 
   const payload = tabs.map(t => {
     const urlType = classifyUrlType(t.url, t.title);
-    const importance = calculateTabImportance(t, openerGraph, timeClusters, tabs);
+    const importance = calculateTabImportance(t, openerGraph, tabs);
     const node = openerGraph.get(t.id);
 
     const entry = {
@@ -460,14 +465,17 @@ function extractResponseText(format, data) {
  */
 function parseGrouperResponse(content, tabs) {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
-  const match = text.match(/\{[\s\S]*\}/); // tolerate ```json fences
+  const match = text.match(/\{[\s\S]*}/); // tolerate ```json fences, greedy to match full nested JSON
   if (!match) throw new Error('No JSON in model response');
   let parsed;
   try { parsed = JSON.parse(match[0]); }
   catch { throw new Error('Invalid JSON in model response'); }
 
   const urlById = new Map(tabs.map(t => [t.id, t.url]));
-  const coerceId = raw => typeof raw === 'string' ? parseInt(raw, 10) : raw;
+  const coerceId = raw => {
+    const id = typeof raw === 'string' ? parseInt(raw, 10) : raw;
+    return Number.isNaN(id) ? undefined : id;
+  };
 
   const claimed = new Set();
   const groups = [];
@@ -525,6 +533,11 @@ function parseGrouperResponse(content, tabs) {
  * (the kept copy) so the safe one survives. Core is recomputed here
  * (same signals as buildGrouperPayload) so a model that ignores the
  * prompt's "never suggest core" rule still can't get one through.
+ *
+ * ponytail: buildOpenerGraph and calculateTabImportance are recomputed here
+ * independently of buildGrouperPayload's own call. O(n) on capped 200-tab
+ * sets, negligible. If this becomes a bottleneck, pass precomputed graph
+ * and importance map through instead of rebuilding.
  */
 function applyKeepRules(result, tabs) {
   const keepUrls = new Set(
@@ -532,11 +545,10 @@ function applyKeepRules(result, tabs) {
   const urlToTab = new Map();
   for (const t of tabs) if (!urlToTab.has(t.url)) urlToTab.set(t.url, t);
   const graph = buildOpenerGraph(tabs);
-  const clusters = clusterByTime(tabs, 30);
   const close = result.close.filter(c => {
     if (keepUrls.has(c.url)) return false;
     const tab = urlToTab.get(c.url);
-    if (tab && calculateTabImportance(tab, graph, clusters, tabs) === 'core') return false;
+    if (tab && calculateTabImportance(tab, graph, tabs) === 'core') return false;
     return true;
   });
   const dupes = result.dupes.map(cluster => {
@@ -689,6 +701,12 @@ async function probeChatEndpoint(settings) {
  * the last tick — idle browsers don't burn tokens. Throws on missing
  * apiKey or API failure; the background caller catches and warns.
  *
+ * Cross-context mutex via the Web Locks API: dashboard pages and the MV3
+ * service worker share one 'aiTick' lock (same extension origin), so a
+ * manual click and the background alarm can't clobber each other's writes.
+ * force (manual) waits its turn then always runs; auto (background) skips
+ * with null when a tick is already in flight.
+ *
  * Storage written per successful tick:
  *   aiGroupCache       { groups, dupes, ts }   — merged incremental groups
  *   aiSweepSuggestions { items, ts }           — close suggestions (replaced)
@@ -698,27 +716,34 @@ async function probeChatEndpoint(settings) {
 async function runAiTick(settings, { force = false } = {}) {
   if (!settings || !settings.apiKey) throw new Error('Set an API key in ⚙ Settings first');
 
-  const all = await chrome.tabs.query({});
-  const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
+  return navigator.locks.request('aiTick', { ifAvailable: !force }, async (lock) => {
+    if (!lock) {
+      console.log('[tabsweep] AI tick already running, skipping');
+      return null;
+    }
 
-  const sig = tabs.map(t => t.url).sort().join('\n');
-  if (!force) {
-    const { lastAiSig } = await chrome.storage.local.get('lastAiSig');
-    if (lastAiSig === sig) return null;
-  }
+    const all = await chrome.tabs.query({});
+    const tabs = all.filter(t => /^https?:/.test(t.url || '') || (t.url || '').startsWith('file://'));
 
-  const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
-  const cachedGroups = aiGroupCache && Array.isArray(aiGroupCache.groups) ? aiGroupCache.groups : [];
-  const result = await callCloudGrouper(tabs, settings, cachedGroups);
-  const merged = mergeGroupsIntoCache(cachedGroups, result.groups);
-  const dupeExtras = result.dupes.reduce((n, c) => n + c.length - 1, 0);
-  const now = Date.now();
+    const sig = tabs.map(t => t.url).sort().join('\n');
+    if (!force) {
+      const { lastAiSig } = await chrome.storage.local.get('lastAiSig');
+      if (lastAiSig === sig) return null;
+    }
 
-  await chrome.storage.local.set({
-    aiGroupCache: { groups: merged, dupes: result.dupes, ts: now },
-    aiSweepSuggestions: { items: result.close, ts: now },
-    lastAiSig: sig,
-    lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
+    const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
+    const cachedGroups = aiGroupCache && Array.isArray(aiGroupCache.groups) ? aiGroupCache.groups : [];
+    const result = await callCloudGrouper(tabs, settings, cachedGroups);
+    const merged = mergeGroupsIntoCache(cachedGroups, result.groups);
+    const dupeExtras = result.dupes.reduce((n, c) => n + c.length - 1, 0);
+    const now = Date.now();
+
+    await chrome.storage.local.set({
+      aiGroupCache: { groups: merged, dupes: result.dupes, ts: now },
+      aiSweepSuggestions: { items: result.close, ts: now },
+      lastAiSig: sig,
+      lastAiTick: { at: new Date(now).toISOString(), groups: merged.length, dupes: dupeExtras, close: result.close.length },
+    });
+    return { groups: merged, dupes: result.dupes, close: result.close };
   });
-  return { groups: merged, dupes: result.dupes, close: result.close };
 }

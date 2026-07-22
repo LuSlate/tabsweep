@@ -95,7 +95,10 @@ async function closeTabsByUrls(urls) {
     })
     .map(tab => tab.id);
 
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeTabsByUrls: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -110,7 +113,10 @@ async function closeTabsExact(urls) {
   const urlSet = new Set(urls);
   const allTabs = await chrome.tabs.query({});
   const toClose = allTabs.filter(t => urlSet.has(t.url)).map(t => t.id);
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeTabsExact: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -170,7 +176,10 @@ async function closeDuplicateTabs(urls, keepOne = true) {
     }
   }
 
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeDuplicateTabs: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -198,7 +207,10 @@ async function closeDashboardDupes() {
     dashboardTabs.find(t => t.active) ||
     dashboardTabs[0];
   const toClose = dashboardTabs.filter(t => t.id !== keep.id).map(t => t.id);
-  if (toClose.length > 0) await chrome.tabs.remove(toClose);
+  if (toClose.length > 0) {
+    try { await chrome.tabs.remove(toClose); }
+    catch (err) { console.error('[tabsweep] closeDashboardDupes: tabs.remove failed:', err); }
+  }
   await fetchOpenTabs();
 }
 
@@ -347,9 +359,12 @@ async function tidyTabStrip() {
  * @param {{ url: string, title: string }} tab
  */
 async function saveTabForLater(tab) {
+  // ponytail: read-modify-write race — background alarm sweep (archiveAndClose)
+  // can interleave between this get and set, silently dropping the user's save.
+  // chrome.storage.local has no atomic CAS; fix via single-writer arch (M4 debt).
   const { deferred = [] } = await chrome.storage.local.get('deferred');
   deferred.push({
-    id:        Date.now().toString(),
+    id:        Date.now().toString() + '-0',
     url:       tab.url,
     title:     tab.title,
     savedAt:   new Date().toISOString(),
@@ -381,6 +396,7 @@ async function getSavedTabs() {
  * Marks a saved tab as completed (checked off). It moves to the archive.
  */
 async function checkOffSavedTab(id) {
+  // ponytail: same read-modify-write race as saveTabForLater (M4 debt).
   const { deferred = [] } = await chrome.storage.local.get('deferred');
   const tab = deferred.find(t => t.id === id);
   if (tab) {
@@ -396,6 +412,7 @@ async function checkOffSavedTab(id) {
  * Marks a saved tab as dismissed (removed from all lists).
  */
 async function dismissSavedTab(id) {
+  // ponytail: same read-modify-write race as saveTabForLater (M4 debt).
   const { deferred = [] } = await chrome.storage.local.get('deferred');
   const tab = deferred.find(t => t.id === id);
   if (tab) {
@@ -545,6 +562,30 @@ function animateCardOut(card) {
     card.remove();
     checkAndShowEmptyState();
   }, 300);
+}
+
+/**
+ * removeChipRow(chip, { withConfetti, cleanupEmptyGroup })
+ *
+ * Animates a .trow chip out (fade + scale), optionally with confetti at the
+ * chip position and empty-group cleanup after removal.
+ */
+function removeChipRow(chip, { withConfetti = false, cleanupEmptyGroup = false } = {}) {
+  if (!chip) return;
+  if (withConfetti) {
+    const rect = chip.getBoundingClientRect();
+    shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  }
+  chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
+  chip.style.opacity    = '0';
+  chip.style.transform  = 'scale(0.8)';
+  setTimeout(() => {
+    const grp = cleanupEmptyGroup ? chip.closest('.group') : null;
+    chip.remove();
+    if (grp && !grp.querySelector('.trow[data-action="focus-tab"]')) {
+      animateCardOut(grp);
+    }
+  }, 200);
 }
 
 /**
@@ -781,6 +822,8 @@ function getRealTabs() {
 // swapped for the autoClose setting once settings load
 // (renderStaticDashboard).
 let currentStaleMs = DAY_MS;
+let currentGroupStaleMs = AUTO_CLOSE_DEFAULTS.groupStaleMinutes * MINUTE_MS;
+let staleTabIds = new Set();
 
 /**
  * sweepStaleTabs()
@@ -790,7 +833,7 @@ let currentStaleMs = DAY_MS;
  * then closes them.
  */
 async function sweepStaleTabs() {
-  const staleTabs = getRealTabs().filter(t => isStaleTab(t, currentStaleMs));
+  const staleTabs = partitionSweepTargets(getRealTabs(), { tabStaleMs: currentStaleMs, groupStaleMs: currentGroupStaleMs });
   if (staleTabs.length === 0) return;
 
   await archiveAndClose(staleTabs);
@@ -838,6 +881,9 @@ async function stashGroup(group) {
     ? t('homepages')
     : (group.label || friendlyDomain(group.domain));
 
+  // ponytail: read-modify-write race on 'workspaces' — dashboard-only so
+  // cross-surface interleaving (service worker) is not a concern, but a second
+  // rapid stash/restore/delete in another dashboard instance could race.
   const workspaces = await getWorkspaces();
   workspaces.push({
     id:      Date.now().toString(),
@@ -866,6 +912,9 @@ async function stashGroup(group) {
  * then removes the workspace.
  */
 async function restoreWorkspace(id) {
+  // ponytail: read-modify-write race on 'workspaces' — snapshot taken before
+  // the tab-create loop; a concurrent stash/delete can clobber. Dashboard-only
+  // (no service worker), but multiple dashboard instances can interleave (M4 debt).
   const workspaces = await getWorkspaces();
   const ws = workspaces.find(w => w.id === id);
   if (!ws) return;
@@ -1038,7 +1087,7 @@ function renderGroupSection(group, startNum) {
     } catch {}
     const count      = urlCounts[tab.url];
     const dupeTag    = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
-    const staleClass = isStaleTab(tab, currentStaleMs) ? ' stale' : '';
+    const staleClass = staleTabIds.has(tab.id) ? ' stale' : '';
     const safeUrl    = (tab.url || '').replace(/"/g, '&quot;');
     const safeTitle  = label.replace(/"/g, '&quot;');
     let domain = '';
@@ -1047,7 +1096,7 @@ function renderGroupSection(group, startNum) {
     return `<div class="trow clickable${staleClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
       <span class="tnum">${String(num).padStart(3, '0')}</span>
       ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
-      <span class="chip-text">${label}</span>${dupeTag}
+      <span class="chip-text">${escapeHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
         <button class="chip-action" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="${t('saveTabTitle')}">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
@@ -1214,8 +1263,8 @@ function renderDeferredItem(item) {
     <div class="deferred-item" data-deferred-id="${item.id}">
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
-        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-          <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${item.title || item.url}
+        <a href="${(item.url || '').replace(/"/g, '&quot;')}" target="_blank" rel="noopener" class="deferred-title" title="${escapeHtml(item.title || '')}">
+          <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${escapeHtml(item.title || item.url)}
         </a>
         <div class="deferred-meta">
           <span>${domain}</span>
@@ -1237,8 +1286,8 @@ function renderArchiveItem(item) {
   const ago = item.completedAt ? timeAgo(item.completedAt) : timeAgo(item.savedAt);
   return `
     <div class="archive-item">
-      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
-        ${item.title || item.url}
+      <a href="${(item.url || '').replace(/"/g, '&quot;')}" target="_blank" rel="noopener" class="archive-item-title" title="${escapeHtml(item.title || '')}">
+        ${escapeHtml(item.title || item.url)}
       </a>
       <span class="archive-item-date">${ago}</span>
     </div>`;
@@ -1265,12 +1314,16 @@ function renderArchiveItem(item) {
  *
  * Migrates old settings format (days) to new format (minutes).
  * Runs once per installation when upgrading from v1.0 to v1.1+.
+ *
+ * Background.js is the canonical migrator (runs first via onInstalled).
+ * This copy exists only as a fallback for the window where the service
+ * worker hasn't started yet; it yields when background.js already ran.
  */
 async function migrateSettings() {
   const { _migrationVersion, autoClose } = await chrome.storage.local.get(['_migrationVersion', 'autoClose']);
 
-  // Already migrated to v2
-  if (_migrationVersion >= 2) return;
+  // Background.js (canonical migrator) already ran — nothing to do.
+  if (_migrationVersion !== undefined) return;
 
   // Check if old format exists
   if (autoClose && (autoClose.tabStaleDays !== undefined || autoClose.groupStaleDays !== undefined)) {
@@ -1313,6 +1366,7 @@ async function renderStaticDashboard() {
   // shared by the banner, the chip dimming, and the background alarm)
   const autoCloseCfg = await getAutoCloseSettings();
   currentStaleMs = autoCloseCfg.tabStaleMinutes * 60 * 1000;
+  currentGroupStaleMs = autoCloseCfg.groupStaleMinutes * 60 * 1000;
 
   // Auto-grouping flag (absent = on) — drives the "Auto" toggle in the header
   const { autoGroup: autoGroupOn = true } = await chrome.storage.local.get('autoGroup');
@@ -1404,6 +1458,8 @@ async function renderStaticDashboard() {
 
   // --- Render AI sweep band + domain groups (sweep band takes the first numbers) ---
   const { aiSweepSuggestions } = await chrome.storage.local.get('aiSweepSuggestions');
+  const staleTargets = partitionSweepTargets(realTabs, { tabStaleMs: currentStaleMs, groupStaleMs: currentGroupStaleMs });
+  staleTabIds = new Set(staleTargets.map(t => t.id));
   const groupsEl = document.getElementById('openTabsGroups');
   if (groupsEl && domainGroups.length > 0) {
     const sweep = renderAiSweepSection(aiSweepSuggestions && aiSweepSuggestions.items, realTabs, 0);
@@ -1418,7 +1474,7 @@ async function renderStaticDashboard() {
   }
 
   // --- Command bar ---
-  const staleN   = realTabs.filter(t => isStaleTab(t, currentStaleMs)).length;
+  const staleN   = staleTargets.length;
   const dashDupeN = openTabs.filter(t => t.isDashboard).length;
   const { aiGroupCache } = await chrome.storage.local.get('aiGroupCache');
   const aiDupeN = mapCachedDupesToTabs(realTabs, aiGroupCache && aiGroupCache.dupes)
@@ -1430,6 +1486,10 @@ async function renderStaticDashboard() {
   if (statTabs) statTabs.textContent = openTabs.length;
 
   // --- Auto-sweep notice (written by the background alarm, Task 6) ---
+  // ponytail: read-then-write race — if a second sweep fires between get and set,
+  // the new timestamp is lost and its toast is never shown. Impact: missed toast
+  // only (no data loss); CAS would need chrome.storage.session mutex or atomic
+  // compare-and-swap not available here. Add if missed toasts become user-visible.
   const { lastSweep, lastSweepSeen } = await chrome.storage.local.get(['lastSweep', 'lastSweepSeen']);
   if (lastSweep && lastSweep.at && lastSweep.at !== lastSweepSeen) {
     showToast(t('toastAutoSwept', { n: lastSweep.count, s: lastSweep.count !== 1 ? 's' : '' }));
@@ -1437,6 +1497,7 @@ async function renderStaticDashboard() {
   }
 
   // --- AI tick notice (written by runAiTick; shown once) ---
+  // ponytail: same read-then-write race as above (toast only, no data loss).
   const { lastAiTick, lastAiTickSeen } = await chrome.storage.local.get(['lastAiTick', 'lastAiTickSeen']);
   if (lastAiTick && lastAiTick.at && lastAiTick.at !== lastAiTickSeen) {
     showToast(t('toastAiTick', { g: lastAiTick.groups, d: lastAiTick.dupes, c: lastAiTick.close }));
@@ -1470,6 +1531,8 @@ document.addEventListener('click', async (e) => {
   if (!actionEl) return;
 
   const action = actionEl.dataset.action;
+
+  try {
 
   // ---- Close duplicate dashboard tabs ----
   if (action === 'close-dashboard-dupes') {
@@ -1572,6 +1635,7 @@ document.addEventListener('click', async (e) => {
     showToast(t('toastSettingsSaved'));
     const ac = await getAutoCloseSettings();
     currentStaleMs = ac.tabStaleMinutes * 60 * 1000;
+    currentGroupStaleMs = ac.groupStaleMinutes * 60 * 1000;
     renderStaticDashboard(); // refresh the command bar with new stale threshold
     return;
   }
@@ -1667,31 +1731,18 @@ document.addEventListener('click', async (e) => {
 
     // Close the tab in Chrome directly
     const allTabs = await chrome.tabs.query({});
-    const match   = allTabs.find(t => t.url === tabUrl);
-    if (match) await chrome.tabs.remove(match.id);
+    const match = allTabs.find(t => t.url === tabUrl);
+    if (match) {
+      try { await chrome.tabs.remove(match.id); }
+      catch (err) { console.error('[tabsweep] close-single-tab: tabs.remove failed:', err); }
+    }
     await fetchOpenTabs();
 
     playCloseSound();
 
-    // Animate the chip row out
     const chip = actionEl.closest('.trow');
     if (chip) {
-      const rect = chip.getBoundingClientRect();
-      shootConfetti(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
-      chip.style.opacity    = '0';
-      chip.style.transform  = 'scale(0.8)';
-      setTimeout(() => {
-        chip.remove();
-        // If the group now has no rows, remove it too
-        const parentGroup = document.querySelector('.group:has(.grows:empty)');
-        if (parentGroup) animateCardOut(parentGroup);
-        document.querySelectorAll('.group').forEach(c => {
-          if (c.querySelectorAll('.trow[data-action="focus-tab"]').length === 0) {
-            animateCardOut(c);
-          }
-        });
-      }, 200);
+      removeChipRow(chip, { withConfetti: true, cleanupEmptyGroup: true });
     }
 
     // Update footer
@@ -1720,17 +1771,17 @@ document.addEventListener('click', async (e) => {
 
     // Close the tab in Chrome
     const allTabs = await chrome.tabs.query({});
-    const match   = allTabs.find(t => t.url === tabUrl);
-    if (match) await chrome.tabs.remove(match.id);
+    const match = allTabs.find(t => t.url === tabUrl);
+    if (match) {
+      try { await chrome.tabs.remove(match.id); }
+      catch (err) { console.error('[tabsweep] defer-single-tab: tabs.remove failed:', err); }
+    }
     await fetchOpenTabs();
 
     // Animate chip out
     const chip = actionEl.closest('.trow');
     if (chip) {
-      chip.style.transition = 'opacity 0.2s linear, transform 0.2s linear';
-      chip.style.opacity    = '0';
-      chip.style.transform  = 'scale(0.8)';
-      setTimeout(() => chip.remove(), 200);
+      removeChipRow(chip, { cleanupEmptyGroup: true });
     }
 
     showToast(t('toastDeferred'));
@@ -1799,18 +1850,15 @@ document.addEventListener('click', async (e) => {
 
     if (card) {
       playCloseSound();
-      animateCardOut(card);
     }
-
-    // Remove from in-memory groups
-    const idx = domainGroups.indexOf(group);
-    if (idx !== -1) domainGroups.splice(idx, 1);
 
     const groupLabel = group.domain === '__landing-pages__' ? t('homepages') : (group.label || friendlyDomain(group.domain));
     showToast(t('toastClosedFrom', { n: urls.length, s: urls.length !== 1 ? 's' : '', label: groupLabel }));
 
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
+    // ponytail: full re-render instead of domainGroups.splice — avoids race with
+    // renderStaticDashboard replacing the array reference while this handler awaits
+    try { await renderStaticDashboard(); }
+    catch (err) { console.error('[tabsweep] close-group: re-render failed:', err); }
     return;
   }
 
@@ -1828,18 +1876,14 @@ document.addEventListener('click', async (e) => {
 
     if (card) {
       playCloseSound();
-      animateCardOut(card);
     }
-
-    const idx = domainGroups.indexOf(group);
-    if (idx !== -1) domainGroups.splice(idx, 1);
 
     showToast(t('toastStashed', { n: closedCount, s: closedCount !== 1 ? 's' : '', name }));
 
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
-
-    await renderWorkspaces();
+    // ponytail: full re-render instead of domainGroups.splice — avoids race with
+    // renderStaticDashboard replacing the array reference while this handler awaits
+    try { await renderStaticDashboard(); }
+    catch (err) { console.error('[tabsweep] stash-group: re-render failed:', err); }
     return;
   }
 
@@ -1961,6 +2005,12 @@ document.addEventListener('click', async (e) => {
 
     showToast(t('toastAllClosed'));
     return;
+  }
+
+  } catch (err) {
+    console.error('[tabsweep] action', action, 'failed:', err);
+    showToast(t('toastActionFailed'));
+    renderStaticDashboard();
   }
 });
 
