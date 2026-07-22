@@ -244,7 +244,9 @@ async function groupTabsInChrome({ silent = false, ungroupFirst = false } = {}) 
     // Bucket this group's ungrouped tabs by window (native groups are per-window)
     const byWindow = {};
     for (const tab of group.tabs) {
-      if (tab.groupId !== -1) continue; // already in a native group — leave it
+      // tab.groupId is a snapshot from before ungroupFirst dissolved the
+      // native groups — once they're gone, a stale id must not skip the tab
+      if (!ungroupFirst && tab.groupId !== -1) continue; // already in a native group — leave it
       (byWindow[tab.windowId] ||= []).push(tab.id);
     }
 
